@@ -1,0 +1,98 @@
+﻿{
+  "version": 3,
+  "configurePresets": [
+    {
+      "name": "msvc",
+      "displayName": "Microsoft Visual Studio Compiler",
+      "description": "Preset for MSVC compiler suite",
+      "binaryDir": "${sourceDir}/out/build/${presetName}",
+      "installDir": "${sourceDir}/out/install/${presetName}",
+      "hidden": true,
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
+    {
+      "name": "clang",
+      "displayName": "LLVM Clang Compiler",
+      "description": "Preset for Clang compiler suite",
+      "binaryDir": "${sourceDir}/out/build/${presetName}",
+      "installDir": "${sourceDir}/out/install/${presetName}",
+      "hidden": true
+    },
+    {
+      "inherits": "msvc",
+      "name": "msvc-x64-debug",
+      "displayName": "MSVC x64 (Debug)",
+      "description": "MSVC x64 Debug preset",
+      "generator": "Ninja",
+      "toolset": {
+        "value": "v145,host=x64",
+        "strategy": "external"
+      },
+      "architecture": {
+        "value": "x64",
+        "strategy": "external"
+      },
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "cl.exe",
+        "CMAKE_CXX_COMPILER": "cl.exe",
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "inherits": "msvc",
+      "name": "msvc-x64-release",
+      "displayName": "MSVC x64 (Release)",
+      "description": "MSVC x64 Release preset",
+      "generator": "Ninja",
+      "toolset": {
+        "value": "v145,host=x64",
+        "strategy": "external"
+      },
+      "architecture": {
+        "value": "x64",
+        "strategy": "external"
+      },
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "cl.exe",
+        "CMAKE_CXX_COMPILER": "cl.exe",
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "inherits": "clang",
+      "name": "clang-x64-debug",
+      "displayName": "LLVM x64 (Debug)",
+      "description": "LLVM x64 Debug preset",
+      "generator": "Ninja",
+      "architecture": {
+        "value": "x64",
+        "strategy": "external"
+      },
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "inherits": "clang",
+      "name": "clang-x64-release",
+      "displayName": "LLVM x64 (Release)",
+      "description": "LLVM x64 Release preset",
+      "generator": "Ninja",
+      "architecture": {
+        "value": "x64",
+        "strategy": "external"
+      },
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    }
+  ]
+}

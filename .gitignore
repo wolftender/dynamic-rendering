@@ -1,0 +1,9 @@
+﻿.cache/
+.vscode/*
+.vs/
+build/
+embedded/
+compile_commands.json
+
+# include configurations for ease of use
+!.vscode/launch.json
