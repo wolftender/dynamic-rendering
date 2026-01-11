@@ -84,6 +84,186 @@ static VKAPI_ATTR auto VKAPI_CALL debugCallback(
     return VK_FALSE;
 }
 
+Buffer::~Buffer() noexcept { destroy(); }
+
+Buffer::Buffer(Buffer &&b) noexcept {
+    device_ = b.device_;
+    allocator_ = b.allocator_;
+
+    buffer_ = b.buffer_;
+    allocation_ = b.allocation_;
+    allocation_info_ = std::move(b.allocation_info_);
+
+    b.device_ = VK_NULL_HANDLE;
+    b.allocator_ = VK_NULL_HANDLE;
+    b.buffer_ = VK_NULL_HANDLE;
+    b.allocation_ = VK_NULL_HANDLE;
+}
+
+auto Buffer::operator=(Buffer &&b) noexcept -> Buffer & {
+    if (this != &b) {
+        device_ = b.device_;
+        allocator_ = b.allocator_;
+
+        buffer_ = b.buffer_;
+        allocation_ = b.allocation_;
+        allocation_info_ = std::move(b.allocation_info_);
+
+        b.device_ = VK_NULL_HANDLE;
+        b.allocator_ = VK_NULL_HANDLE;
+        b.buffer_ = VK_NULL_HANDLE;
+        b.allocation_ = VK_NULL_HANDLE;
+    }
+
+    return *this;
+}
+
+auto Buffer::mem_prop_flags() const -> VkMemoryPropertyFlags {
+    VkMemoryPropertyFlags props;
+    vmaGetAllocationMemoryProperties(allocator_, allocation_, &props);
+
+    return props;
+}
+
+auto Buffer::flush(VkDeviceSize offset, VkDeviceSize size) const {
+    VK_CHECK_ERROR(vmaFlushAllocation(allocator_, allocation_, offset, size));
+}
+
+auto Buffer::destroy() noexcept -> void {
+    if (VK_NULL_HANDLE != buffer_) {
+        vmaDestroyBuffer(allocator_, buffer_, allocation_);
+    }
+
+    buffer_ = VK_NULL_HANDLE;
+    allocation_ = VK_NULL_HANDLE;
+    allocator_ = VK_NULL_HANDLE;
+    device_ = VK_NULL_HANDLE;
+
+    allocation_info_ = {};
+}
+
+Image::View::~View() noexcept { destroy(); }
+
+Image::View::View(View &&v) noexcept {
+    image_view_ = v.image_view_;
+    image_ = v.image_;
+    device_ = v.device_;
+
+    v.image_view_ = VK_NULL_HANDLE;
+    v.image_ = nullptr;
+    v.device_ = VK_NULL_HANDLE;
+}
+
+auto Image::View::operator=(View &&v) noexcept -> View & {
+    if (this != &v) {
+        destroy();
+
+        image_view_ = v.image_view_;
+        image_ = v.image_;
+        device_ = v.device_;
+
+        v.image_view_ = VK_NULL_HANDLE;
+        v.image_ = nullptr;
+        v.device_ = VK_NULL_HANDLE;
+    }
+
+    return *this;
+}
+
+auto Image::View::destroy() noexcept -> void {
+    if (VK_NULL_HANDLE != image_view_) {
+        vkDestroyImageView(device_, image_view_, nullptr);
+
+        image_view_ = VK_NULL_HANDLE;
+        image_ = nullptr;
+        device_ = VK_NULL_HANDLE;
+    }
+}
+
+Image::~Image() noexcept { destroy(); }
+
+Image::Image(Image &&i) noexcept {
+    device_ = i.device_;
+    allocator_ = i.allocator_;
+    image_ = i.image_;
+    allocation_ = i.allocation_;
+    allocation_info_ = std::move(i.allocation_info_);
+
+    i.device_ = VK_NULL_HANDLE;
+    i.allocator_ = VK_NULL_HANDLE;
+    i.image_ = VK_NULL_HANDLE;
+    i.allocation_ = VK_NULL_HANDLE;
+}
+
+auto Image::operator=(Image &&i) noexcept -> Image & {
+    if (this != &i) {
+        device_ = i.device_;
+        allocator_ = i.allocator_;
+        image_ = i.image_;
+        allocation_ = i.allocation_;
+        allocation_info_ = std::move(i.allocation_info_);
+
+        i.device_ = VK_NULL_HANDLE;
+        i.allocator_ = VK_NULL_HANDLE;
+        i.image_ = VK_NULL_HANDLE;
+        i.allocation_ = VK_NULL_HANDLE;
+    }
+
+    return *this;
+}
+
+auto Image::create_view(VkImageViewType type, VkFormat format, VkImageAspectFlags aspect_flags) const -> View {
+    VkImageViewCreateInfo view_desc = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        .pNext = nullptr,
+        .image = image_,
+        .viewType = type,
+        .format = format,
+        .subresourceRange =
+            {
+                .aspectMask = aspect_flags,
+                .baseMipLevel = 0,
+                .levelCount = 1,
+                .baseArrayLayer = 0,
+                .layerCount = 1,
+            },
+    };
+
+    VkImageView view = VK_NULL_HANDLE;
+    VK_CHECK_ERROR(vkCreateImageView(device_, &view_desc, nullptr, &view));
+
+    View result;
+    result.image_view_ = view;
+    result.image_ = this;
+    result.device_ = device_;
+
+    return result;
+}
+
+auto Image::mem_prop_flags() const -> VkMemoryPropertyFlags {
+    VkMemoryPropertyFlags props;
+    vmaGetAllocationMemoryProperties(allocator_, allocation_, &props);
+
+    return props;
+}
+
+auto Image::flush(VkDeviceSize offset, VkDeviceSize size) const {
+    VK_CHECK_ERROR(vmaFlushAllocation(allocator_, allocation_, offset, size));
+}
+
+auto Image::destroy() noexcept -> void {
+    if (VK_NULL_HANDLE != image_) {
+        vmaDestroyImage(allocator_, image_, allocation_);
+    }
+
+    allocator_ = VK_NULL_HANDLE;
+    allocation_ = VK_NULL_HANDLE;
+    image_ = VK_NULL_HANDLE;
+    device_ = VK_NULL_HANDLE;
+
+    allocation_info_ = {};
+}
+
 auto checkInstanceLayerSupport(std::string_view layer_name) -> bool {
     static std::vector<VkLayerProperties> s_properties = []() {
         uint32_t num_layers = 0;
@@ -124,8 +304,8 @@ auto Instance::create(const Description &description) -> std::unique_ptr<Instanc
         s_initialized_loader_ = true;
     }
 
-    std::unique_ptr<Instance> context{new (std::nothrow) Instance()};
-    if (!context) {
+    std::unique_ptr<Instance> instance{new (std::nothrow) Instance()};
+    if (!instance) {
         LogError("cannot allocate new context object");
         util::reportFatalError("cannot allocate new context object");
 
@@ -133,16 +313,16 @@ auto Instance::create(const Description &description) -> std::unique_ptr<Instanc
     }
 
     // check if we should enable validation layers
-    context->enable_validation_layers_ = checkIfEnableValidationLayers();
+    instance->enable_validation_layers_ = checkIfEnableValidationLayers();
 
     // instance extensions + layers, some are conditional
     std::vector<const char *> instance_extensions = description.instance_extensions;
-    if (context->enable_validation_layers_) {
+    if (instance->enable_validation_layers_) {
         instance_extensions.emplace_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
     }
 
     std::vector<const char *> instance_layers = {};
-    if (context->enable_validation_layers_) {
+    if (instance->enable_validation_layers_) {
         instance_layers.emplace_back(kValidationLayerName);
     }
 
@@ -170,7 +350,7 @@ auto Instance::create(const Description &description) -> std::unique_ptr<Instanc
 
     VkInstanceCreateInfo instance_info = {
         .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
-        .pNext = context->enable_validation_layers_ ? &debug_msg_info : nullptr,
+        .pNext = instance->enable_validation_layers_ ? &debug_msg_info : nullptr,
         .flags = 0,
         .pApplicationInfo = &application_info,
         .enabledLayerCount = static_cast<uint32_t>(instance_layers.size()),
@@ -180,21 +360,21 @@ auto Instance::create(const Description &description) -> std::unique_ptr<Instanc
     };
 
     LogInfo("vulkan: create instance");
-    VK_CHECK_ERROR(vkCreateInstance(&instance_info, nullptr, &context->instance_));
+    VK_CHECK_ERROR(vkCreateInstance(&instance_info, nullptr, &instance->instance_));
     if (!s_initialized_instance_loader_) {
         LogInfo("vulkan: volk not initialized yet, load instance function pointers");
 
-        volkLoadInstance(context->instance_);
+        volkLoadInstance(instance->instance_);
         s_initialized_instance_loader_ = true;
     }
 
-    if (context->enable_validation_layers_) {
+    if (instance->enable_validation_layers_) {
         LogInfo("vulkan: enabled validation layers, create debug messenger");
         VK_CHECK_ERROR(
-            vkCreateDebugUtilsMessengerEXT(context->instance_, &debug_msg_info, nullptr, &context->debug_messenger_));
+            vkCreateDebugUtilsMessengerEXT(instance->instance_, &debug_msg_info, nullptr, &instance->debug_messenger_));
     }
 
-    return context;
+    return instance;
 }
 
 auto Instance::create_context(const Context::Description &description) -> std::unique_ptr<Context> {
@@ -339,7 +519,7 @@ auto getCompatibleDevices(VkInstance instance, VkSurfaceKHR surface)
     return compatible_devices;
 }
 
-auto Instance::Context::create(VkInstance instance, const Description &description) -> std::unique_ptr<Context> {
+auto Context::create(VkInstance instance, const Description &description) -> std::unique_ptr<Context> {
     std::unique_ptr<Context> context{new (std::nothrow) Context()};
     if (!context) {
         LogError("vulkan: failed to allocate context");
@@ -459,7 +639,46 @@ auto Instance::Context::create(VkInstance instance, const Description &descripti
     return context;
 }
 
-auto Instance::Context::create_swapchain() -> void {
+auto Context::create_image(const VkImageCreateInfo &image_info) -> Image {
+    VmaAllocationCreateInfo alloc_create_info = {
+        .usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
+        .requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+    };
+
+    VkImage vk_image = VK_NULL_HANDLE;
+    VmaAllocation allocation = VK_NULL_HANDLE;
+    VmaAllocationInfo allocation_info = {};
+
+    VK_CHECK_ERROR(
+        vmaCreateImage(allocator_, &image_info, &alloc_create_info, &vk_image, &allocation, &allocation_info));
+
+    Image image;
+    image.device_ = device_;
+    image.allocator_ = allocator_;
+    image.image_ = vk_image;
+    image.allocation_info_ = std::move(allocation_info);
+
+    return image;
+}
+
+auto Context::create_image(VkFormat format, VkImageUsageFlags usage, VkImageType type, const VkExtent3D &extent)
+    -> Image {
+    VkImageCreateInfo image_info = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .imageType = type,
+        .format = format,
+        .extent = extent,
+        .mipLevels = 1,
+        .arrayLayers = 1,
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .tiling = VK_IMAGE_TILING_OPTIMAL,
+        .usage = usage,
+    };
+
+    return create_image(image_info);
+}
+
+auto Context::create_swapchain() -> void {
     VkSurfaceCapabilitiesKHR capabilities = {};
     VK_CHECK_ERROR(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical_device_, surface_, &capabilities));
 
@@ -599,7 +818,7 @@ auto Instance::Context::create_swapchain() -> void {
     });
 }
 
-Instance::Context::~Context() noexcept {
+Context::~Context() noexcept {
     if (0 != swapchain_image_views_.size()) {
         for (const auto &image_view : swapchain_image_views_) {
             vkDestroyImageView(device_, image_view, nullptr);
@@ -644,5 +863,37 @@ Instance::~Instance() noexcept {
 
     LogInfo("vulkan: cleanup complete");
 }
+
+auto Renderer::create(const Description &description) -> std::unique_ptr<Renderer> {
+    std::unique_ptr<Renderer> renderer{new (std::nothrow) Renderer()};
+    if (!renderer) {
+        LogError("vulkan: cannot allocate renderer object");
+        return {};
+    }
+
+    renderer->context_ = description.context;
+
+    const auto surface_extent = renderer->context_->surface_extent();
+    VkImageCreateInfo depth_buffer_info = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .imageType = VK_IMAGE_TYPE_2D,
+        .format = VK_FORMAT_D24_UNORM_S8_UINT,
+        .extent = {surface_extent.width, surface_extent.height, 1},
+        .mipLevels = 1,
+        .arrayLayers = 1,
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .tiling = VK_IMAGE_TILING_OPTIMAL,
+        .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+    };
+
+    renderer->depth_buffer_ = renderer->context_->create_image(depth_buffer_info);
+    renderer->depth_buffer_view_ = renderer->depth_buffer_.create_view(
+        VK_IMAGE_VIEW_TYPE_2D, VK_FORMAT_D24_UNORM_S8_UINT, VK_IMAGE_ASPECT_DEPTH_BIT);
+
+    return renderer;
+}
+
+Renderer::~Renderer() noexcept {}
 
 } // namespace graphics

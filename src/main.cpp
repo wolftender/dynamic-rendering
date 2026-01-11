@@ -56,7 +56,8 @@ private:
 
     GLFWwindow *window_handle_ = nullptr;
     std::unique_ptr<graphics::Instance> graphics_instance_ = {};
-    std::unique_ptr<graphics::Instance::Context> graphics_context_ = {};
+    std::unique_ptr<graphics::Context> graphics_context_ = {};
+    std::unique_ptr<graphics::Renderer> renderer_ = {};
 };
 
 auto main([[maybe_unused]] int argc, [[maybe_unused]] char **argv) -> int {
@@ -126,7 +127,7 @@ auto ApplicationState::create(const Description &description) -> std::unique_ptr
     LogInfo("window extent is {}x{}", window_width, window_height);
     LogInfo("framebuffer extent is {}x{}", framebuffer_width, framebuffer_height);
 
-    graphics::Instance::Context::Description context_desc = {
+    graphics::Context::Description context_desc = {
         .surface = VK_NULL_HANDLE,
         .surface_extent = {static_cast<uint32_t>(window_width), static_cast<uint32_t>(window_height)},
         .framebuffer_extent = {static_cast<uint32_t>(framebuffer_width), static_cast<uint32_t>(framebuffer_height)},
@@ -136,8 +137,16 @@ auto ApplicationState::create(const Description &description) -> std::unique_ptr
         state->graphics_instance_->instance(), state->window_handle_, nullptr, &context_desc.surface));
 
     LogInfo("created window vulkan surface");
+
     state->graphics_context_ = state->graphics_instance_->create_context(context_desc);
     LogInfo("created graphics context");
+
+    graphics::Renderer::Description renderer_desc = {
+        .context = state->graphics_context_.get(),
+    };
+
+    state->renderer_ = graphics::Renderer::create(renderer_desc);
+    LogInfo("created renderer object");
 
     return state;
 }
