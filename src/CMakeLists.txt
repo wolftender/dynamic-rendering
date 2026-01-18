@@ -6,8 +6,12 @@ add_library(thirdparty OBJECT ${GAME_SRC_DIR}/thirdparty.cpp)
 set(GAME_SOURCE_FILE_LIST
     ${GAME_SRC_DIR}/main.cpp
     ${GAME_SRC_DIR}/util.cpp
+    ${GAME_SRC_DIR}/act.cpp
     ${GAME_SRC_DIR}/vulkan.cpp
 )
+
+# compresset assets
+bake_compressed_asset(${ASSET_DIR}/wakamo.act wakamo.act.hpp)
 
 add_executable(${PROJECT_NAME} ${GAME_SOURCE_FILE_LIST} ${ASSET_OUTPUTS})
 
