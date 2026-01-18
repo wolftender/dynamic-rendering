@@ -87,6 +87,7 @@ static VKAPI_ATTR auto VKAPI_CALL debugCallback(
 Buffer::~Buffer() noexcept { destroy(); }
 
 Buffer::Buffer(Buffer &&b) noexcept {
+    destroy();
     device_ = b.device_;
     allocator_ = b.allocator_;
 
@@ -102,6 +103,7 @@ Buffer::Buffer(Buffer &&b) noexcept {
 
 auto Buffer::operator=(Buffer &&b) noexcept -> Buffer & {
     if (this != &b) {
+        destroy();
         device_ = b.device_;
         allocator_ = b.allocator_;
 
@@ -145,6 +147,7 @@ auto Buffer::destroy() noexcept -> void {
 Image::View::~View() noexcept { destroy(); }
 
 Image::View::View(View &&v) noexcept {
+    destroy();
     image_view_ = v.image_view_;
     image_ = v.image_;
     device_ = v.device_;
@@ -183,6 +186,8 @@ auto Image::View::destroy() noexcept -> void {
 Image::~Image() noexcept { destroy(); }
 
 Image::Image(Image &&i) noexcept {
+    destroy();
+
     device_ = i.device_;
     allocator_ = i.allocator_;
     image_ = i.image_;
@@ -197,6 +202,8 @@ Image::Image(Image &&i) noexcept {
 
 auto Image::operator=(Image &&i) noexcept -> Image & {
     if (this != &i) {
+        destroy();
+
         device_ = i.device_;
         allocator_ = i.allocator_;
         image_ = i.image_;
@@ -656,6 +663,7 @@ auto Context::create_image(const VkImageCreateInfo &image_info) -> Image {
     image.device_ = device_;
     image.allocator_ = allocator_;
     image.image_ = vk_image;
+    image.allocation_ = allocation;
     image.allocation_info_ = std::move(allocation_info);
 
     return image;
