@@ -23,10 +23,9 @@ using f64   = double;
 // clang-format on
 
 template <typename T>
-concept is_primitive_type =
-    std::same_as<T, u8> || std::same_as<T, u16> || std::same_as<T, u32> || std::same_as<T, u64> ||
-    std::same_as<T, s8> || std::same_as<T, s16> || std::same_as<T, s32> || std::same_as<T, s64> ||
-    std::same_as<T, f32> || std::same_as<T, f64>;
+concept IsPrimitiveType = std::same_as<T, u8> || std::same_as<T, u16> || std::same_as<T, u32> || std::same_as<T, u64> ||
+                          std::same_as<T, s8> || std::same_as<T, s16> || std::same_as<T, s32> || std::same_as<T, s64> ||
+                          std::same_as<T, f32> || std::same_as<T, f64>;
 
 class BinaryReader final {
 public:
@@ -44,9 +43,9 @@ public:
     auto position() const -> u64 { return ptr_; }
     auto remaining() const -> u64;
     auto seek(u64 location) -> Result;
-    auto read_buffer(u64 num_bytes) -> std::optional<std::span<const u8>>;
+    auto readBuffer(u64 num_bytes) -> std::optional<std::span<const u8>>;
 
-    template <is_primitive_type T> auto read() -> std::optional<T> {
+    template <IsPrimitiveType T> auto read() -> std::optional<T> {
         constexpr auto type_size = sizeof(T);
         const auto end_ptr = data_span_.size();
 
@@ -61,7 +60,7 @@ public:
         return result;
     }
 
-    template <typename T = f32> auto read_vec2() -> std::optional<glm::vec<2, T>> {
+    template <typename T = f32> auto readVec2() -> std::optional<glm::vec<2, T>> {
         const auto x = read<f32>();
         const auto y = read<f32>();
 
@@ -72,7 +71,7 @@ public:
         return glm::vec<2, T>{*x, *y};
     }
 
-    template <typename T = f32> auto read_vec3() -> std::optional<glm::vec<3, T>> {
+    template <typename T = f32> auto readVec3() -> std::optional<glm::vec<3, T>> {
         const auto x = read<f32>();
         const auto y = read<f32>();
         const auto z = read<f32>();
@@ -84,7 +83,7 @@ public:
         return glm::vec<3, T>{*x, *y, *z};
     }
 
-    template <typename T = f32> auto read_vec4() -> std::optional<glm::vec<4, T>> {
+    template <typename T = f32> auto readVec4() -> std::optional<glm::vec<4, T>> {
         const auto x = read<f32>();
         const auto y = read<f32>();
         const auto z = read<f32>();
@@ -97,7 +96,7 @@ public:
         return glm::vec<4, T>{*x, *y, *z, *w};
     }
 
-    template <typename T = f32> auto read_quat() -> std::optional<glm::qua<T>> {
+    template <typename T = f32> auto readQuat() -> std::optional<glm::qua<T>> {
         const auto x = read<f32>();
         const auto y = read<f32>();
         const auto z = read<f32>();
@@ -349,7 +348,7 @@ struct Model final {
     std::vector<Animation> animations;
     std::vector<AnyAnimationChannel> animation_channels;
 
-    static auto load_from_binary(std::span<const u8> binary) -> std::optional<Model>;
+    static auto loadFromBinary(std::span<const u8> binary) -> std::optional<Model>;
 };
 
 } // namespace act

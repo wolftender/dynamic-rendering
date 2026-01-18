@@ -39,9 +39,9 @@ public:
     auto operator=(Buffer &&buffer) noexcept -> Buffer &;
 
     auto buffer() const -> VkBuffer { return buffer_; }
-    auto addr_of() const -> const VkBuffer * { return &buffer_; }
+    auto addrOf() const -> const VkBuffer * { return &buffer_; }
 
-    auto mem_prop_flags() const -> VkMemoryPropertyFlags;
+    auto memPropFlags() const -> VkMemoryPropertyFlags;
     auto flush(VkDeviceSize offset = 0ull, VkDeviceSize size = VK_WHOLE_SIZE) const;
 
 private:
@@ -93,10 +93,10 @@ public:
     auto operator=(Image &&image) noexcept -> Image &;
 
     auto image() const -> VkImage { return image_; }
-    auto addr_of() const -> const VkImage * { return &image_; }
+    auto addrOf() const -> const VkImage * { return &image_; }
 
-    auto create_view(VkImageViewType type, VkFormat format, VkImageAspectFlags aspect_flags) const -> View;
-    auto mem_prop_flags() const -> VkMemoryPropertyFlags;
+    auto createView(VkImageViewType type, VkFormat format, VkImageAspectFlags aspect_flags) const -> View;
+    auto memPropFlags() const -> VkMemoryPropertyFlags;
     auto flush(VkDeviceSize offset = 0ull, VkDeviceSize size = VK_WHOLE_SIZE) const;
 
 private:
@@ -133,29 +133,29 @@ public:
 
     auto instance() const -> VkInstance { return instance_; }
     auto surface() const -> VkSurfaceKHR { return surface_; }
-    auto physical_device() const -> VkPhysicalDevice { return physical_device_; }
+    auto physicalDevice() const -> VkPhysicalDevice { return physical_device_; }
     auto device() const -> VkDevice { return device_; }
-    auto present_queue() const -> VkQueue { return present_queue_; }
-    auto graphics_queue() const -> VkQueue { return graphics_queue_; }
+    auto presentQueue() const -> VkQueue { return present_queue_; }
+    auto graphicsQueue() const -> VkQueue { return graphics_queue_; }
     auto swapchain() const -> VkSwapchainKHR { return swapchain_; }
-    auto surface_extent() const -> const VkExtent2D & { return surface_extent_; }
-    auto graphics_queue_family() const -> uint32_t { return graphics_queue_family_; }
-    auto present_queue_family() const -> uint32_t { return present_queue_family_; }
-    auto swapchain_format() const -> VkSurfaceFormatKHR { return swapchain_format_; }
-    auto present_mode() const -> VkPresentModeKHR { return present_mode_; }
-    auto framebuffer_extent() const -> const VkExtent2D & { return framebuffer_extent_; }
-    auto swapchain_images() const -> const std::vector<VkImage> & { return swapchain_images_; }
-    auto swapchain_image_views() const -> const std::vector<VkImageView> & { return swapchain_image_views_; }
+    auto surfaceExtent() const -> const VkExtent2D & { return surface_extent_; }
+    auto graphicsQueueFamily() const -> uint32_t { return graphics_queue_family_; }
+    auto presentQueueFamily() const -> uint32_t { return present_queue_family_; }
+    auto swapchainFormat() const -> VkSurfaceFormatKHR { return swapchain_format_; }
+    auto presentMode() const -> VkPresentModeKHR { return present_mode_; }
+    auto framebufferExtent() const -> const VkExtent2D & { return framebuffer_extent_; }
+    auto swapchainImages() const -> const std::vector<VkImage> & { return swapchain_images_; }
+    auto swapchainImageViews() const -> const std::vector<VkImageView> & { return swapchain_image_views_; }
 
-    auto create_image(const VkImageCreateInfo &image_info) -> Image;
-    auto create_image(VkFormat format, VkImageUsageFlags usage, VkImageType type, const VkExtent3D &extent) -> Image;
+    auto createImage(const VkImageCreateInfo &image_info) -> Image;
+    auto createImage(VkFormat format, VkImageUsageFlags usage, VkImageType type, const VkExtent3D &extent) -> Image;
 
 private:
     static auto create(VkInstance instance, const Description &description) -> std::unique_ptr<Context>;
 
     Context() = default;
 
-    auto create_swapchain() -> void;
+    auto createSwapchain() -> void;
 
     VkInstance instance_ = VK_NULL_HANDLE;
     VkSurfaceKHR surface_ = VK_NULL_HANDLE;
@@ -200,7 +200,7 @@ public:
     auto operator=(Instance &&) noexcept = delete;
 
     auto instance() const -> VkInstance { return instance_; }
-    auto create_context(const Context::Description &description) -> std::unique_ptr<Context>;
+    auto createContext(const Context::Description &description) -> std::unique_ptr<Context>;
 
 private:
     static bool s_initialized_loader_;

@@ -4,7 +4,7 @@
 #include <glm/gtc/type_ptr.hpp>
 
 namespace act {
-auto parse_image_mime_type(u32 v) -> std::optional<ImageMimeType> {
+auto parseImageMimeType(u32 v) -> std::optional<ImageMimeType> {
     switch (v) {
     case 0x10000001:
         return ImageMimeType::eRawBitmap;
@@ -19,7 +19,7 @@ auto parse_image_mime_type(u32 v) -> std::optional<ImageMimeType> {
     }
 }
 
-auto parse_texture_wrap_type(u32 v) -> std::optional<TextureWrapType> {
+auto parseTextureWrapType(u32 v) -> std::optional<TextureWrapType> {
     switch (v) {
     case 0x10010001:
         return TextureWrapType::eRepeat;
@@ -32,7 +32,7 @@ auto parse_texture_wrap_type(u32 v) -> std::optional<TextureWrapType> {
     }
 }
 
-auto parse_submesh_vertex_layout(u32 v) -> std::optional<SubmeshVertexLayout> {
+auto parseSubmeshVertexLayout(u32 v) -> std::optional<SubmeshVertexLayout> {
     switch (v) {
     case 0x10020001:
         return SubmeshVertexLayout::eVertexStatic;
@@ -43,7 +43,7 @@ auto parse_submesh_vertex_layout(u32 v) -> std::optional<SubmeshVertexLayout> {
     }
 }
 
-auto parse_animation_interpolation_mode(u32 v) -> std::optional<AnimationInterpolationMode> {
+auto parseAnimInterpolationMode(u32 v) -> std::optional<AnimationInterpolationMode> {
     switch (v) {
     case 0x10030001:
         return AnimationInterpolationMode::eLinear;
@@ -54,7 +54,7 @@ auto parse_animation_interpolation_mode(u32 v) -> std::optional<AnimationInterpo
     }
 }
 
-auto parse_animation_property_type(u32 v) -> std::optional<AnimationPropertyType> {
+auto parseAnimPropertyType(u32 v) -> std::optional<AnimationPropertyType> {
     switch (v) {
     case 0x10040001:
         return AnimationPropertyType::eTranslation;
@@ -67,7 +67,7 @@ auto parse_animation_property_type(u32 v) -> std::optional<AnimationPropertyType
     }
 }
 
-auto parse_block_type(u32 v) -> std::optional<BlockType> {
+auto parseBlockType(u32 v) -> std::optional<BlockType> {
     switch (v) {
     case 0x20000001:
         return BlockType::eImageBlock;
@@ -94,7 +94,7 @@ auto parse_block_type(u32 v) -> std::optional<BlockType> {
     }
 }
 
-auto parse_command_type(u32 v) -> std::optional<CommandType> {
+auto parseCommandType(u32 v) -> std::optional<CommandType> {
     switch (v) {
     case 0x30010001:
         return CommandType::eImageSetMimeType;
@@ -180,7 +180,7 @@ auto BinaryReader::seek(u64 location) -> Result {
     return Result::eSuccess;
 }
 
-auto BinaryReader::read_buffer(u64 num_bytes) -> std::optional<std::span<const u8>> {
+auto BinaryReader::readBuffer(u64 num_bytes) -> std::optional<std::span<const u8>> {
     const auto end_ptr = data_span_.size();
 
     if (ptr_ + num_bytes > end_ptr) {
@@ -217,7 +217,7 @@ auto BinaryReader::read_buffer(u64 num_bytes) -> std::optional<std::span<const u
 
 #define READ_VEC2_PROPERTY_OR_ERROR(T, reader, output)                                                                 \
     {                                                                                                                  \
-        auto value = reader.read_vec2<T>();                                                                            \
+        auto value = reader.readVec2<T>();                                                                             \
         if (!value.has_value()) {                                                                                      \
             LogError("act: binary reader failed to get property vec2 type = {}, name={}", #T, #output);                \
             return std::nullopt;                                                                                       \
@@ -227,7 +227,7 @@ auto BinaryReader::read_buffer(u64 num_bytes) -> std::optional<std::span<const u
 
 #define READ_VEC3_PROPERTY_OR_ERROR(T, reader, output)                                                                 \
     {                                                                                                                  \
-        auto value = reader.read_vec3<T>();                                                                            \
+        auto value = reader.readVec3<T>();                                                                             \
         if (!value.has_value()) {                                                                                      \
             LogError("act: binary reader failed to get property vec3 type = {}, name={}", #T, #output);                \
             return std::nullopt;                                                                                       \
@@ -237,7 +237,7 @@ auto BinaryReader::read_buffer(u64 num_bytes) -> std::optional<std::span<const u
 
 #define READ_VEC4_PROPERTY_OR_ERROR(T, reader, output)                                                                 \
     {                                                                                                                  \
-        auto value = reader.read_vec4<T>();                                                                            \
+        auto value = reader.readVec4<T>();                                                                             \
         if (!value.has_value()) {                                                                                      \
             LogError("act: binary reader failed to get property vec4 type = {}, name={}", #T, #output);                \
             return std::nullopt;                                                                                       \
@@ -247,7 +247,7 @@ auto BinaryReader::read_buffer(u64 num_bytes) -> std::optional<std::span<const u
 
 #define READ_QUAT_PROPERTY_OR_ERROR(T, reader, output)                                                                 \
     {                                                                                                                  \
-        auto value = reader.read_quat<T>();                                                                            \
+        auto value = reader.readQuat<T>();                                                                             \
         if (!value.has_value()) {                                                                                      \
             LogError("act: binary reader failed to get property quat type = {}, name={}", #T, #output);                \
             return std::nullopt;                                                                                       \
@@ -265,39 +265,39 @@ auto BinaryReader::read_buffer(u64 num_bytes) -> std::optional<std::span<const u
         }                                                                                                              \
     }
 
-auto read_command_type(BinaryReader &reader) -> std::optional<CommandType> {
+auto readCommandType(BinaryReader &reader) -> std::optional<CommandType> {
     const auto command_type = reader.read<u32>();
     if (!command_type.has_value()) {
         return std::nullopt;
     }
 
-    const auto command_type_enum = parse_command_type(command_type.value());
+    const auto command_type_enum = parseCommandType(command_type.value());
     return command_type_enum;
 }
 
-auto read_buffer(BinaryReader &reader) -> std::optional<std::span<const u8>> {
+auto readSizedBuffer(BinaryReader &reader) -> std::optional<std::span<const u8>> {
     u32 buffer_size;
     READ_OR_ERROR(u32, reader, buffer_size);
 
-    return reader.read_buffer(buffer_size);
+    return reader.readBuffer(buffer_size);
 }
 
-auto parse_image_block(std::span<const u8> block_buffer) -> std::optional<Model::Image> {
+auto parseImageBlock(std::span<const u8> block_buffer) -> std::optional<Model::Image> {
     BinaryReader block_reader{block_buffer};
     Model::Image image{};
 
-    while (const auto command_type = read_command_type(block_reader)) {
+    while (const auto command_type = readCommandType(block_reader)) {
         switch (*command_type) {
         case act::CommandType::eImageSetMimeType:
             SIZED_PROPERTY_ASSERT(block_reader, sizeof(u32));
-            READ_ENUM_PROPERTY_OR_ERROR(parse_image_mime_type, block_reader, image.mime_type);
+            READ_ENUM_PROPERTY_OR_ERROR(parseImageMimeType, block_reader, image.mime_type);
             break;
         case act::CommandType::eImageSetDimensions:
             SIZED_PROPERTY_ASSERT(block_reader, sizeof(u32) * 2);
             READ_VEC2_PROPERTY_OR_ERROR(u32, block_reader, image.dimensions);
             break;
         case act::CommandType::eImageSetBuffer: {
-            const auto buffer = read_buffer(block_reader);
+            const auto buffer = readSizedBuffer(block_reader);
             if (!buffer.has_value()) {
                 LogError("act: failed to read image buffer");
                 return std::nullopt;
@@ -315,20 +315,20 @@ auto parse_image_block(std::span<const u8> block_buffer) -> std::optional<Model:
     return image;
 }
 
-auto parse_texture_block(std::span<const u8> block_buffer) -> std::optional<Model::Texture> {
+auto parseTextureBlock(std::span<const u8> block_buffer) -> std::optional<Model::Texture> {
     BinaryReader block_reader{block_buffer};
     Model::Texture texture = {};
 
-    while (auto command_type = read_command_type(block_reader)) {
+    while (auto command_type = readCommandType(block_reader)) {
         switch (*command_type) {
         case act::CommandType::eTextureSetWrapS:
             SIZED_PROPERTY_ASSERT(block_reader, sizeof(u32));
-            READ_ENUM_PROPERTY_OR_ERROR(parse_texture_wrap_type, block_reader, texture.wrap_s);
+            READ_ENUM_PROPERTY_OR_ERROR(parseTextureWrapType, block_reader, texture.wrap_s);
             break;
 
         case act::CommandType::eTextureSetWrapT:
             SIZED_PROPERTY_ASSERT(block_reader, sizeof(u32));
-            READ_ENUM_PROPERTY_OR_ERROR(parse_texture_wrap_type, block_reader, texture.wrap_t);
+            READ_ENUM_PROPERTY_OR_ERROR(parseTextureWrapType, block_reader, texture.wrap_t);
             break;
 
         case act::CommandType::eTextureSetImage:
@@ -345,11 +345,11 @@ auto parse_texture_block(std::span<const u8> block_buffer) -> std::optional<Mode
     return texture;
 }
 
-auto parse_material_block(std::span<const u8> block_buffer) -> std::optional<Model::Material> {
+auto parseMaterialBlock(std::span<const u8> block_buffer) -> std::optional<Model::Material> {
     BinaryReader block_reader{block_buffer};
     Model::Material material = {};
 
-    while (auto command_type = read_command_type(block_reader)) {
+    while (auto command_type = readCommandType(block_reader)) {
         switch (*command_type) {
         case act::CommandType::eMaterialSetBaseColor:
             SIZED_PROPERTY_ASSERT(block_reader, sizeof(f32) * 4);
@@ -385,11 +385,11 @@ auto parse_material_block(std::span<const u8> block_buffer) -> std::optional<Mod
     return material;
 }
 
-auto parse_node_block(std::span<const u8> block_buffer) -> std::optional<Model::Node> {
+auto parseNodeBlock(std::span<const u8> block_buffer) -> std::optional<Model::Node> {
     BinaryReader block_reader{block_buffer};
     Model::Node node = {};
 
-    while (auto command_type = read_command_type(block_reader)) {
+    while (auto command_type = readCommandType(block_reader)) {
         switch (*command_type) {
         case act::CommandType::eNodeSetMesh:
             SIZED_PROPERTY_ASSERT(block_reader, sizeof(u32));
@@ -430,11 +430,11 @@ auto parse_node_block(std::span<const u8> block_buffer) -> std::optional<Model::
     return node;
 }
 
-auto parse_mesh_block(std::span<const u8> block_buffer) -> std::optional<Model::Mesh> {
+auto parseMeshBlock(std::span<const u8> block_buffer) -> std::optional<Model::Mesh> {
     BinaryReader block_reader{block_buffer};
     Model::Mesh mesh = {};
 
-    while (auto command_type = read_command_type(block_reader)) {
+    while (auto command_type = readCommandType(block_reader)) {
         switch (*command_type) {
         case act::CommandType::eMeshAddSubmesh: {
             u32 submesh;
@@ -454,18 +454,18 @@ auto parse_mesh_block(std::span<const u8> block_buffer) -> std::optional<Model::
     return mesh;
 }
 
-auto parse_submesh_block(std::span<const u8> block_buffer) -> std::optional<Model::AnySubmesh> {
+auto parseSubmeshBlock(std::span<const u8> block_buffer) -> std::optional<Model::AnySubmesh> {
     BinaryReader block_reader{block_buffer};
 
     std::span<const u8> vertex_buffer;
     std::vector<u32> indices;
     act::SubmeshVertexLayout layout;
 
-    while (auto command_type = read_command_type(block_reader)) {
+    while (auto command_type = readCommandType(block_reader)) {
         switch (*command_type) {
         case act::CommandType::eSubmeshSetLayout:
             SIZED_PROPERTY_ASSERT(block_reader, sizeof(u32));
-            READ_ENUM_PROPERTY_OR_ERROR(parse_submesh_vertex_layout, block_reader, layout);
+            READ_ENUM_PROPERTY_OR_ERROR(parseSubmeshVertexLayout, block_reader, layout);
             break;
 
         case act::CommandType::eSubmeshSetIndices: {
@@ -485,7 +485,7 @@ auto parse_submesh_block(std::span<const u8> block_buffer) -> std::optional<Mode
         }
 
         case act::CommandType::eSubmeshSetVertices: {
-            const auto buffer = read_buffer(block_reader);
+            const auto buffer = readSizedBuffer(block_reader);
             if (!buffer.has_value()) {
                 LogError("act: failed to read vertex buffer");
                 return std::nullopt;
@@ -562,11 +562,11 @@ auto parse_submesh_block(std::span<const u8> block_buffer) -> std::optional<Mode
     }
 }
 
-auto parse_skin_block(std::span<const u8> block_buffer) -> std::optional<Model::Skin> {
+auto parseSkinBlock(std::span<const u8> block_buffer) -> std::optional<Model::Skin> {
     BinaryReader block_reader{block_buffer};
     Model::Skin skin = {};
 
-    while (auto command_type = read_command_type(block_reader)) {
+    while (auto command_type = readCommandType(block_reader)) {
         switch (*command_type) {
         case act::CommandType::eSkinAddNode: {
             u32 node;
@@ -586,11 +586,11 @@ auto parse_skin_block(std::span<const u8> block_buffer) -> std::optional<Model::
     return skin;
 }
 
-auto parse_skin_node_block(std::span<const u8> block_buffer) -> std::optional<Model::SkinNode> {
+auto parseSkinNodeBlock(std::span<const u8> block_buffer) -> std::optional<Model::SkinNode> {
     BinaryReader block_reader{block_buffer};
     Model::SkinNode skin_node = {};
 
-    while (auto command_type = read_command_type(block_reader)) {
+    while (auto command_type = readCommandType(block_reader)) {
         switch (*command_type) {
         case act::CommandType::eSkinNodeSetNode:
             SIZED_PROPERTY_ASSERT(block_reader, sizeof(u32));
@@ -598,7 +598,7 @@ auto parse_skin_node_block(std::span<const u8> block_buffer) -> std::optional<Mo
             break;
 
         case act::CommandType::eSkinNodeSetMatrix: {
-            auto matrix_buffer = read_buffer(block_reader);
+            auto matrix_buffer = readSizedBuffer(block_reader);
             if (!matrix_buffer.has_value() || 16 * sizeof(f32) != matrix_buffer->size_bytes()) {
                 LogError("act: matrix buffer has invalid size, expected 16 x f32");
                 return std::nullopt;
@@ -623,11 +623,11 @@ auto parse_skin_node_block(std::span<const u8> block_buffer) -> std::optional<Mo
     return skin_node;
 }
 
-auto parse_animation_block(std::span<const u8> block_buffer) -> std::optional<Model::Animation> {
+auto parseAnimationBlock(std::span<const u8> block_buffer) -> std::optional<Model::Animation> {
     BinaryReader block_reader{block_buffer};
     Model::Animation animation = {};
 
-    while (auto command_type = read_command_type(block_reader)) {
+    while (auto command_type = readCommandType(block_reader)) {
         switch (*command_type) {
         case act::CommandType::eAnimationAddChannel: {
             u32 channel;
@@ -648,7 +648,7 @@ auto parse_animation_block(std::span<const u8> block_buffer) -> std::optional<Mo
 }
 
 template <AnimationPropertyType PropertyType>
-auto parse_keyframe_data(std::span<const u8> buffer, const std::vector<f32> &timeline)
+auto parseKeyframeData(std::span<const u8> buffer, const std::vector<f32> &timeline)
     -> std::optional<std::vector<typename Model::AnimationChannel<PropertyType>::Keyframe>> {
     using Channel = Model::AnimationChannel<PropertyType>;
     using DataType = Channel::Traits::DataType;
@@ -674,7 +674,7 @@ auto parse_keyframe_data(std::span<const u8> buffer, const std::vector<f32> &tim
     return keyframes;
 }
 
-auto parse_animation_channel_block(std::span<const u8> block_buffer) -> std::optional<Model::AnyAnimationChannel> {
+auto parseAnimChannelBlock(std::span<const u8> block_buffer) -> std::optional<Model::AnyAnimationChannel> {
     BinaryReader block_reader{block_buffer};
 
     std::optional<u32> node;
@@ -684,16 +684,16 @@ auto parse_animation_channel_block(std::span<const u8> block_buffer) -> std::opt
     std::vector<f32> timeline;
     std::span<const u8> keyframe_buffer;
 
-    while (auto command_type = read_command_type(block_reader)) {
+    while (auto command_type = readCommandType(block_reader)) {
         switch (*command_type) {
         case act::CommandType::eAnimChannelSetProp:
             SIZED_PROPERTY_ASSERT(block_reader, sizeof(u32));
-            READ_ENUM_PROPERTY_OR_ERROR(parse_animation_property_type, block_reader, property);
+            READ_ENUM_PROPERTY_OR_ERROR(parseAnimPropertyType, block_reader, property);
             break;
 
         case act::CommandType::eAnimChannelSetMode:
             SIZED_PROPERTY_ASSERT(block_reader, sizeof(u32));
-            READ_ENUM_PROPERTY_OR_ERROR(parse_animation_interpolation_mode, block_reader, mode);
+            READ_ENUM_PROPERTY_OR_ERROR(parseAnimInterpolationMode, block_reader, mode);
             break;
 
         case act::CommandType::eAnimChannelSetNode:
@@ -702,7 +702,7 @@ auto parse_animation_channel_block(std::span<const u8> block_buffer) -> std::opt
             break;
 
         case act::CommandType::eAnimChannelSetKeyframes: {
-            const auto buffer = read_buffer(block_reader);
+            const auto buffer = readSizedBuffer(block_reader);
             if (!buffer.has_value()) {
                 LogError("act: missing keyframe buffer for animation node");
                 return std::nullopt;
@@ -741,7 +741,7 @@ auto parse_animation_channel_block(std::span<const u8> block_buffer) -> std::opt
 
     switch (property) {
     case act::AnimationPropertyType::eTranslation: {
-        auto keyframes = parse_keyframe_data<act::AnimationPropertyType::eTranslation>(keyframe_buffer, timeline);
+        auto keyframes = parseKeyframeData<act::AnimationPropertyType::eTranslation>(keyframe_buffer, timeline);
         if (!keyframes.has_value()) {
             LogError("act: failed to parse keyframes");
             return std::nullopt;
@@ -756,7 +756,7 @@ auto parse_animation_channel_block(std::span<const u8> block_buffer) -> std::opt
     }
 
     case act::AnimationPropertyType::eRotation: {
-        auto keyframes = parse_keyframe_data<act::AnimationPropertyType::eRotation>(keyframe_buffer, timeline);
+        auto keyframes = parseKeyframeData<act::AnimationPropertyType::eRotation>(keyframe_buffer, timeline);
         if (!keyframes.has_value()) {
             LogError("act: failed to parse keyframes");
             return std::nullopt;
@@ -771,7 +771,7 @@ auto parse_animation_channel_block(std::span<const u8> block_buffer) -> std::opt
     }
 
     case act::AnimationPropertyType::eScale: {
-        auto keyframes = parse_keyframe_data<act::AnimationPropertyType::eScale>(keyframe_buffer, timeline);
+        auto keyframes = parseKeyframeData<act::AnimationPropertyType::eScale>(keyframe_buffer, timeline);
         if (!keyframes.has_value()) {
             LogError("act: failed to parse keyframes");
             return std::nullopt;
@@ -804,7 +804,7 @@ auto parse_animation_channel_block(std::span<const u8> block_buffer) -> std::opt
         break;                                                                                                         \
     }
 
-auto Model::load_from_binary(std::span<const u8> binary) -> std::optional<Model> {
+auto Model::loadFromBinary(std::span<const u8> binary) -> std::optional<Model> {
     Model model;
     BinaryReader reader{binary};
 
@@ -845,13 +845,13 @@ auto Model::load_from_binary(std::span<const u8> binary) -> std::optional<Model>
             return std::nullopt;
         }
 
-        const auto block_type_enum = parse_block_type(block_type);
+        const auto block_type_enum = parseBlockType(block_type);
         if (!block_type_enum.has_value()) {
             LogError("act: invalid block type {} of block at {}", block_type, block_position);
             return std::nullopt;
         }
 
-        const auto block_buffer = reader.read_buffer(block_size);
+        const auto block_buffer = reader.readBuffer(block_size);
         if (!block_buffer.has_value()) {
             LogError("act: invalid block, expected {} readable bytes in the stream", block_size);
             return std::nullopt;
@@ -859,16 +859,16 @@ auto Model::load_from_binary(std::span<const u8> binary) -> std::optional<Model>
 
         switch (block_type_enum.value()) {
             // clang-format off
-        DEF_BLOCK_PARSER(act::BlockType::eImageBlock,       parse_image_block,              model.images)
-        DEF_BLOCK_PARSER(act::BlockType::eTextureBlock,     parse_texture_block,            model.textures)
-        DEF_BLOCK_PARSER(act::BlockType::eMaterialBlock,    parse_material_block,           model.materials)
-        DEF_BLOCK_PARSER(act::BlockType::eNodeBlock,        parse_node_block,               model.nodes)
-        DEF_BLOCK_PARSER(act::BlockType::eMeshBlock,        parse_mesh_block,               model.meshes)
-        DEF_BLOCK_PARSER(act::BlockType::eSubmeshBlock,     parse_submesh_block,            model.submeshes)
-        DEF_BLOCK_PARSER(act::BlockType::eSkinBlock,        parse_skin_block,               model.skins)
-        DEF_BLOCK_PARSER(act::BlockType::eSkinNodeBlock,    parse_skin_node_block,          model.skin_nodes)
-        DEF_BLOCK_PARSER(act::BlockType::eAnimationBlock,   parse_animation_block,          model.animations)
-        DEF_BLOCK_PARSER(act::BlockType::eAnimChannelBlock, parse_animation_channel_block,  model.animation_channels)
+        DEF_BLOCK_PARSER(act::BlockType::eImageBlock,       parseImageBlock,        model.images)
+        DEF_BLOCK_PARSER(act::BlockType::eTextureBlock,     parseTextureBlock,      model.textures)
+        DEF_BLOCK_PARSER(act::BlockType::eMaterialBlock,    parseMaterialBlock,     model.materials)
+        DEF_BLOCK_PARSER(act::BlockType::eNodeBlock,        parseNodeBlock,         model.nodes)
+        DEF_BLOCK_PARSER(act::BlockType::eMeshBlock,        parseMeshBlock,         model.meshes)
+        DEF_BLOCK_PARSER(act::BlockType::eSubmeshBlock,     parseSubmeshBlock,      model.submeshes)
+        DEF_BLOCK_PARSER(act::BlockType::eSkinBlock,        parseSkinBlock,         model.skins)
+        DEF_BLOCK_PARSER(act::BlockType::eSkinNodeBlock,    parseSkinNodeBlock,     model.skin_nodes)
+        DEF_BLOCK_PARSER(act::BlockType::eAnimationBlock,   parseAnimationBlock,    model.animations)
+        DEF_BLOCK_PARSER(act::BlockType::eAnimChannelBlock, parseAnimChannelBlock,  model.animation_channels)
             // clang-format on
 
         default:

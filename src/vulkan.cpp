@@ -120,7 +120,7 @@ auto Buffer::operator=(Buffer &&b) noexcept -> Buffer & {
     return *this;
 }
 
-auto Buffer::mem_prop_flags() const -> VkMemoryPropertyFlags {
+auto Buffer::memPropFlags() const -> VkMemoryPropertyFlags {
     VkMemoryPropertyFlags props;
     vmaGetAllocationMemoryProperties(allocator_, allocation_, &props);
 
@@ -219,7 +219,7 @@ auto Image::operator=(Image &&i) noexcept -> Image & {
     return *this;
 }
 
-auto Image::create_view(VkImageViewType type, VkFormat format, VkImageAspectFlags aspect_flags) const -> View {
+auto Image::createView(VkImageViewType type, VkFormat format, VkImageAspectFlags aspect_flags) const -> View {
     VkImageViewCreateInfo view_desc = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
         .pNext = nullptr,
@@ -247,7 +247,7 @@ auto Image::create_view(VkImageViewType type, VkFormat format, VkImageAspectFlag
     return result;
 }
 
-auto Image::mem_prop_flags() const -> VkMemoryPropertyFlags {
+auto Image::memPropFlags() const -> VkMemoryPropertyFlags {
     VkMemoryPropertyFlags props;
     vmaGetAllocationMemoryProperties(allocator_, allocation_, &props);
 
@@ -384,7 +384,7 @@ auto Instance::create(const Description &description) -> std::unique_ptr<Instanc
     return instance;
 }
 
-auto Instance::create_context(const Context::Description &description) -> std::unique_ptr<Context> {
+auto Instance::createContext(const Context::Description &description) -> std::unique_ptr<Context> {
     return Context::create(instance_, description);
 }
 
@@ -642,11 +642,11 @@ auto Context::create(VkInstance instance, const Description &description) -> std
     VK_CHECK_ERROR(vmaCreateAllocator(&allocator_info, &context->allocator_));
     LogInfo("vulkan: vma was initialized");
 
-    context->create_swapchain();
+    context->createSwapchain();
     return context;
 }
 
-auto Context::create_image(const VkImageCreateInfo &image_info) -> Image {
+auto Context::createImage(const VkImageCreateInfo &image_info) -> Image {
     VmaAllocationCreateInfo alloc_create_info = {
         .usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
         .requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
@@ -669,7 +669,7 @@ auto Context::create_image(const VkImageCreateInfo &image_info) -> Image {
     return image;
 }
 
-auto Context::create_image(VkFormat format, VkImageUsageFlags usage, VkImageType type, const VkExtent3D &extent)
+auto Context::createImage(VkFormat format, VkImageUsageFlags usage, VkImageType type, const VkExtent3D &extent)
     -> Image {
     VkImageCreateInfo image_info = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
@@ -683,10 +683,10 @@ auto Context::create_image(VkFormat format, VkImageUsageFlags usage, VkImageType
         .usage = usage,
     };
 
-    return create_image(image_info);
+    return createImage(image_info);
 }
 
-auto Context::create_swapchain() -> void {
+auto Context::createSwapchain() -> void {
     VkSurfaceCapabilitiesKHR capabilities = {};
     VK_CHECK_ERROR(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical_device_, surface_, &capabilities));
 
@@ -881,7 +881,7 @@ auto Renderer::create(const Description &description) -> std::unique_ptr<Rendere
 
     renderer->context_ = description.context;
 
-    const auto surface_extent = renderer->context_->surface_extent();
+    const auto surface_extent = renderer->context_->surfaceExtent();
     VkImageCreateInfo depth_buffer_info = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
         .imageType = VK_IMAGE_TYPE_2D,
@@ -895,8 +895,8 @@ auto Renderer::create(const Description &description) -> std::unique_ptr<Rendere
         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
     };
 
-    renderer->depth_buffer_ = renderer->context_->create_image(depth_buffer_info);
-    renderer->depth_buffer_view_ = renderer->depth_buffer_.create_view(
+    renderer->depth_buffer_ = renderer->context_->createImage(depth_buffer_info);
+    renderer->depth_buffer_view_ = renderer->depth_buffer_.createView(
         VK_IMAGE_VIEW_TYPE_2D, VK_FORMAT_D24_UNORM_S8_UINT, VK_IMAGE_ASPECT_DEPTH_BIT);
 
     return renderer;
