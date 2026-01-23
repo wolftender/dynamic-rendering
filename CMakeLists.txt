@@ -86,34 +86,54 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-set(RESOURCE_EMBED_DIR ${CMAKE_SOURCE_DIR}/embedded)
-
 add_subdirectory(tools)
 
 set(ASSET_DIR ${CMAKE_SOURCE_DIR}/assets)
-set(ASSET_OUTPUTS "")
-function(bake_compressed_asset ASSET_FILE HEADER_FILE)
-    set(OUTPUT_FILE ${RESOURCE_EMBED_DIR}/${HEADER_FILE})
-    add_custom_command(
-        OUTPUT ${OUTPUT_FILE}
-        COMMAND $<TARGET_FILE:assetpacker> ${ASSET_FILE} ${OUTPUT_FILE} --header
-        DEPENDS ${ASSET_FILE} assetpacker
-        COMMENT "create compressed asset binary: ${ASSET_FILE} -> ${OUTPUT_FILE}"
-        VERBATIM
-    )
-    set(ASSET_OUTPUTS ${ASSET_OUTPUTS} ${OUTPUT_FILE} PARENT_SCOPE)
+set(RESOURCE_DIR ${CMAKE_SOURCE_DIR}/resources)
+
+set_property(GLOBAL PROPERTY PACKER_COMPRESSED_ASSETS "")
+set_property(GLOBAL PROPERTY PACKER_UNCOMPRESSED_ASSETS "")
+
+function(add_asset_compressed FILE)
+    get_property(list GLOBAL PROPERTY PACKER_COMPRESSED_ASSETS)
+    list(APPEND list "${FILE}")
+    set_property(GLOBAL PROPERTY PACKER_COMPRESSED_ASSETS "${list}")
 endfunction()
 
-function(bake_uncompressed_asset ASSET_FILE HEADER_FILE)
-    set(OUTPUT_FILE ${RESOURCE_EMBED_DIR}/${HEADER_FILE})
+function(add_asset_uncompressed FILE)
+    get_property(list GLOBAL PROPERTY PACKER_UNCOMPRESSED_ASSETS)
+    list(APPEND list "${FILE}")
+    set_property(GLOBAL PROPERTY PACKER_UNCOMPRESSED_ASSETS "${list}")
+endfunction()
+
+function(add_packed_assets OUTPUT_FILE)
+    get_property(C_ASSETS GLOBAL PROPERTY PACKER_COMPRESSED_ASSETS)
+    get_property(U_ASSETS GLOBAL PROPERTY PACKER_UNCOMPRESSED_ASSETS)
+
+    set(PACKER_ARGS "")
+    foreach(f IN LISTS C_ASSETS)
+        list(APPEND PACKER_ARGS "c:${f}")
+    endforeach()
+    foreach(f IN LISTS U_ASSETS)
+        list(APPEND PACKER_ARGS "a:${f}")
+    endforeach()
+
     add_custom_command(
-        OUTPUT ${OUTPUT_FILE}
-        COMMAND $<TARGET_FILE:assetpacker> ${ASSET_FILE} ${OUTPUT_FILE} --header --copy
-        DEPENDS ${ASSET_FILE} assetpacker
-        COMMENT "create uncompressed asset binary: ${ASSET_FILE} -> ${OUTPUT_FILE}"
+        OUTPUT "${OUTPUT_FILE}"
+        COMMAND $<TARGET_FILE:assetpacker> pack binary "${OUTPUT_FILE}" ${PACKER_ARGS}
+        DEPENDS
+            ${ARGS_FILE}
+            ${C_ASSETS}
+            ${U_ASSETS}
+            assetpacker
+        COMMENT "packing assets into ${OUTPUT_FILE}"
         VERBATIM
     )
-    set(ASSET_OUTPUTS ${ASSET_OUTPUTS} ${OUTPUT_FILE} PARENT_SCOPE)
+
+    add_custom_target(packed_assets ALL
+        DEPENDS "${OUTPUT_FILE}"
+    )
+
 endfunction()
 
 add_subdirectory(src)

@@ -8,7 +8,7 @@
 #include "vulkan.hpp"
 #include "act.hpp"
 
-#include "wakamo.act.hpp"
+// #include "wakamo.act.hpp"
 
 #define GLFW_FATAL_ERROR(glfw_call_name)                                                                               \
     do {                                                                                                               \
@@ -72,15 +72,15 @@ auto main([[maybe_unused]] int argc, [[maybe_unused]] char **argv) -> int {
     LogInfo("compiled with {} on {}", COMPILER_STRING, __DATE__);
 
     // test model loading
-    const auto decompressed_act = util::decompressBuffer(kWakamo_act);
-    const auto model = act::Model::loadFromBinary(decompressed_act);
+    // const auto decompressed_act = util::decompressBuffer(kWakamo_act);
+    // const auto model = act::Model::loadFromBinary(decompressed_act);
 
-    if (!model.has_value()) {
-        LogError("failed to load act model");
-        return EXIT_FAILURE;
-    }
+    // if (!model.has_value()) {
+    //     LogError("failed to load act model");
+    //     return EXIT_FAILURE;
+    // }
 
-    LogInfo("model has {} nodes", model->nodes.size());
+    // LogInfo("model has {} nodes", model->nodes.size());
 
     ApplicationState::Description app_desc = {
         .title = "vulkan 1.3 dynamic rendering",

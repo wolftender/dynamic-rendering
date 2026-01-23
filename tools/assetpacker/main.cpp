@@ -1,57 +1,379 @@
-#include <cstdint>
-#include <cstdio>
-#include <cstdlib>
-#include <cstring>
+#include <variant>
 #include <fstream>
-#include <iomanip>
-#include <ios>
-#include <iterator>
-#include <optional>
-#include <ranges>
-#include <sstream>
-#include <vector>
 #include <filesystem>
 
-#include <lz4.h>
 #include <fmt/base.h>
+#include <fmt/format.h>
 
-enum class Result { Fail = 0, Success = 1 };
+#include "util.hpp"
+#include "archive.hpp"
 
-template <typename T> inline constexpr auto vec_char_ptr(const std::vector<T> &v) -> const char * {
-    return reinterpret_cast<const char *>(v.data());
+enum class ProgramMode {
+    ePack,
+    eUnpack,
+    eInspect,
+};
+
+enum class OutputMode {
+    eBinary,
+    eHeader,
+    eSourceAndHeader,
+};
+
+auto stringToProgramMode(std::string_view sv) -> std::optional<ProgramMode> {
+    if ("pack" == sv) {
+        return ProgramMode::ePack;
+    } else if ("unpack" == sv) {
+        return ProgramMode::eUnpack;
+    } else if ("inspect" == sv) {
+        return ProgramMode::eInspect;
+    }
+
+    return std::nullopt;
 }
 
-template <typename T> inline constexpr auto vec_char_ptr_mut(std::vector<T> &v) -> char * {
-    return reinterpret_cast<char *>(v.data());
+auto stringToOutputMode(std::string_view sv) -> std::optional<OutputMode> {
+    if ("binary" == sv) {
+        return OutputMode::eBinary;
+    } else if ("header" == sv) {
+        return OutputMode::eHeader;
+    } else if ("source" == sv) {
+        return OutputMode::eSourceAndHeader;
+    }
+
+    return std::nullopt;
 }
 
-auto has_flag(int argc, char *const *argv, const std::string_view flag_short, const std::string_view flag_long) -> bool;
-auto get_filenames(int argc, char *const *argv) -> std::optional<std::pair<std::string, std::string>>;
-auto read_file_to_buffer(const std::string &file_name, std::vector<uint8_t> &buffer) -> Result;
-auto compress_to_buffer(
-    const std::vector<uint8_t> &input_buffer, std::vector<uint8_t> &output_buffer, size_t &result_size) -> Result;
-auto decompress_to_buffer(
-    const std::vector<uint8_t> &input_buffer, std::vector<uint8_t> &output_buffer, size_t &result_size) -> Result;
+struct InspectDescription {
+    std::string input_file;
+};
 
+struct UnpackDescription {
+    std::string input_file;
+    std::string output_directory;
+};
+
+struct PackDescription {
+    struct FileEntry {
+        std::string file_name;
+        bool use_compression;
+    };
+
+    std::vector<FileEntry> input_files;
+    std::string output_file;
+
+    OutputMode output_mode;
+};
+
+using ProgramOptions = std::variant<InspectDescription, UnpackDescription, PackDescription, std::monostate>;
+
+/// parse command line options for archive description
+auto parseCommandLine(int argc, char **argv) -> ProgramOptions;
+
+auto inspect(const InspectDescription &desc) -> Result;
+auto unpack(const UnpackDescription &desc) -> Result;
+auto pack(const PackDescription &desc) -> Result;
+
+/// utility to make a camel cased constant name from a filename
+auto makeVariableName(const std::string &file_name) -> std::string;
+
+/// write a binary buffer to header file
 template <std::ranges::random_access_range Range>
     requires std::is_convertible_v<std::ranges::range_value_t<Range>, const char>
-auto write_buffer_to_file(const std::string &file_name, const Range &range) -> Result {
-    const auto data_ptr = std::ranges::data(range);
-    const auto data_size = std::ranges::size(range);
+auto writeBufferToHeader(const std::string &file_name, const Range &range) -> Result;
 
-    std::ofstream fs{file_name, std::ios::binary};
-    if (!fs.good()) {
+/// write a binary buffer to header AND source file
+template <std::ranges::random_access_range Range>
+    requires std::is_convertible_v<std::ranges::range_value_t<Range>, const char>
+auto writeBufferToHeaderAndSrc(const std::string &file_name, const Range &range) -> Result;
+
+auto main(int argc, char **argv) -> int {
+    const auto options = parseCommandLine(argc, argv);
+    Result exit_result = Result::Fail;
+
+    std::visit(
+        overload{
+            [&exit_result](const InspectDescription &desc) { exit_result = inspect(desc); },
+            [&exit_result](const UnpackDescription &desc) { exit_result = unpack(desc); },
+            [&exit_result](const PackDescription &desc) { exit_result = pack(desc); },
+            [&exit_result]([[maybe_unused]] const std::monostate &) { exit_result = Result::Fail; },
+        },
+        options);
+
+    return exit_result == Result::Success ? EXIT_SUCCESS : EXIT_FAILURE;
+}
+
+auto inspect(const InspectDescription &desc) -> Result {
+    std::vector<uint8_t> buffer;
+    const auto res = readFileToBuffer(desc.input_file, buffer);
+
+    if (Result::Success != res) {
+        fmt::println(stderr, "error: {} is not accessible", desc.input_file);
         return Result::Fail;
     }
 
-    fs.write(reinterpret_cast<const char *>(data_ptr), data_size);
+    auto reader = ArchiveReader::create(buffer);
+    if (!reader) {
+        fmt::println(stderr, "error: {} is not a valid archive", desc.input_file);
+        return Result::Fail;
+    }
+
+    fmt::println(stdout, "CRC32 | compressed size | raw size | offset | name");
+    for (const auto &entry : reader->getFileList()) {
+        fmt::println(
+            stdout, "{} | {} | {} | {} | {}", entry.crc32, entry.compressed_size, entry.decompressed_size,
+            entry.ptr_start, entry.name);
+    }
+
     return Result::Success;
 }
 
-auto make_variable_name(const std::string &file_name) -> std::string;
+auto unpack(const UnpackDescription &desc) -> Result {
+    std::vector<uint8_t> buffer;
+    const auto res = readFileToBuffer(desc.input_file, buffer);
+
+    if (Result::Success != res) {
+        fmt::println(stderr, "error: {} is not accessible", desc.input_file);
+        return Result::Fail;
+    }
+
+    auto reader = ArchiveReader::create(buffer);
+    if (!reader) {
+        fmt::println(stderr, "error: {} is not a valid archive", desc.input_file);
+        return Result::Fail;
+    }
+
+    fmt::println(stdout, "CRC32 | compressed size | raw size | offset | name");
+    for (u64 file_id = 0ull; file_id < reader->getFileList().size(); ++file_id) {
+        const auto &entry = reader->getFileList()[file_id];
+        const auto output_path = std::filesystem::path{desc.output_directory} / entry.name;
+
+        fmt::println(stdout, "decompressing {}...", entry.name);
+
+        const auto buffer = reader->getFileContent(file_id);
+        if (!buffer.has_value()) {
+            fmt::println(stderr, "error: cannot decompress {}", entry.name);
+            continue;
+        }
+
+        auto res = writeBufferToFile(output_path.string(), buffer.value());
+        if (Result::Success != res) {
+            fmt::println(stderr, "error: cannot write {} to {}", entry.name, output_path.string());
+            continue;
+        }
+    }
+
+    return Result::Success;
+}
+
+auto pack(const PackDescription &desc) -> Result {
+    ArchiveWriter writer;
+    for (const auto &entry : desc.input_files) {
+        std::filesystem::path path{entry.file_name};
+        if (!std::filesystem::exists(path)) {
+            fmt::println(stderr, "error: {} does not exist, skipping", entry.file_name);
+            continue;
+        }
+
+        Result res;
+        std::vector<u8> buffer;
+
+        res = readFileToBuffer(entry.file_name, buffer);
+        if (Result::Success != res) {
+            fmt::println(stderr, "error: {} not accessible, skipping", entry.file_name);
+            continue;
+        }
+
+        if (entry.use_compression) {
+            res = writer.appendCompressed(path.filename().generic_string(), buffer);
+            if (Result::Success != res) {
+                fmt::println(stderr, "error: {} compression failed, skipping", entry.file_name);
+                continue;
+            }
+        } else {
+            writer.appendFile(path.filename().generic_string(), buffer);
+        }
+
+        fmt::println(
+            stdout, "appended file to archive: {}, compressed: {}", entry.file_name,
+            entry.use_compression ? "yes" : "no");
+    }
+
+    switch (desc.output_mode) {
+    case OutputMode::eBinary: {
+        std::ofstream fs{desc.output_file, std::ios::out | std::ios::binary};
+        if (!fs.good()) {
+            return Result::Fail;
+        }
+
+        writer.dump(fs);
+        return Result::Success;
+    }
+
+    case OutputMode::eHeader: {
+        return writeBufferToHeader(desc.output_file, writer.dump());
+    }
+
+    case OutputMode::eSourceAndHeader: {
+        return writeBufferToHeaderAndSrc(desc.output_file, writer.dump());
+    }
+
+    default:
+        fmt::println(stderr, "error: unsupported format");
+        return Result::Fail;
+    }
+}
+
+auto parseCommandLine(int argc, char **argv) -> ProgramOptions {
+    std::vector<std::string_view> args{static_cast<size_t>(argc)};
+    for (int i = 0; i < argc; ++i) {
+        args[i] = std::string_view{argv[i]};
+    }
+
+    auto arg_iter = args.begin() + 1;
+    if (args.end() == arg_iter) {
+        fmt::println(stderr, "error: incorrect program usage, missing mode");
+        return std::monostate{};
+    }
+
+    const auto mode = stringToProgramMode(*arg_iter);
+    if (!mode.has_value()) {
+        fmt::println(stderr, "error: incorrect program usage, unknown mode {}", *arg_iter);
+        return std::monostate{};
+    }
+
+    switch (mode.value()) {
+    case ProgramMode::eInspect: {
+        arg_iter++;
+        if (args.end() == arg_iter) {
+            fmt::println(stderr, "error: icorrect program usage, expected file to inspect");
+            return std::monostate{};
+        }
+
+        return InspectDescription{std::string{*arg_iter}};
+    }
+
+    case ProgramMode::eUnpack: {
+        UnpackDescription desc;
+
+        arg_iter++;
+        if (args.end() == arg_iter) {
+            fmt::println(stderr, "error: icorrect program usage, expected file to unpack");
+            return std::monostate{};
+        }
+
+        desc.input_file = *arg_iter;
+
+        arg_iter++;
+        if (args.end() == arg_iter) {
+            fmt::println(stderr, "error: icorrect program usage, expected output directory");
+            return std::monostate{};
+        }
+
+        desc.output_directory = *arg_iter;
+        return desc;
+    }
+
+    case ProgramMode::ePack: {
+        PackDescription desc;
+
+        arg_iter++;
+        if (args.end() == arg_iter) {
+            fmt::println(stderr, "error: icorrect program usage, expected export format");
+            return std::monostate{};
+        }
+
+        auto format = stringToOutputMode(*arg_iter);
+        if (!format.has_value()) {
+            fmt::println(stderr, "error: icorrect program usage, invalid format {}", *arg_iter);
+            return std::monostate{};
+        }
+
+        desc.output_mode = format.value();
+
+        arg_iter++;
+        if (args.end() == arg_iter) {
+            fmt::println(stderr, "error: icorrect program usage, expected output file name");
+            return std::monostate{};
+        }
+
+        desc.output_file = *arg_iter;
+        arg_iter++;
+
+        for (; args.end() != arg_iter; ++arg_iter) {
+            std::string input_file{*arg_iter};
+            bool compress_file = false;
+
+            if (input_file.starts_with("c:")) {
+                compress_file = true;
+            } else if (input_file.starts_with("a:")) {
+                compress_file = false;
+            } else {
+                fmt::println(stderr, "error: incorrect input file format: {}", input_file);
+                return std::monostate{};
+            }
+
+            std::string filename = input_file.substr(2);
+            desc.input_files.emplace_back(PackDescription::FileEntry{std::move(filename), compress_file});
+        }
+
+        return desc;
+    }
+
+    default:
+        break;
+    }
+
+    return std::monostate{};
+}
+
+auto writeU32(uint8_t *buffer, uint32_t value) -> void {
+    buffer[0] = static_cast<char>(value & 0xff);
+    buffer[1] = static_cast<char>((value >> 8) & 0xff);
+    buffer[2] = static_cast<char>((value >> 16) & 0xff);
+    buffer[3] = static_cast<char>((value >> 24) & 0xff);
+}
+
+auto readU32(const uint8_t *buffer) -> uint32_t {
+    return 0U | (static_cast<uint32_t>(buffer[0]) << 0) | (static_cast<uint32_t>(buffer[1]) << 8) |
+           (static_cast<uint32_t>(buffer[2]) << 16) | (static_cast<uint32_t>(buffer[3]) << 24);
+}
+
+auto makeVariableName(const std::string &file_name) -> std::string {
+    namespace fs = std::filesystem;
+    const auto path = fs::path{file_name};
+    const auto file = path.stem().string();
+
+    bool next_upper = true;
+    std::ostringstream ss;
+    for (const auto ch : file) {
+        if (ch == '_') {
+            ss << ch;
+            next_upper = true;
+        } else if (isAsciiLowercase(ch)) {
+            if (next_upper) {
+                ss << toUppercase(ch);
+            } else {
+                ss << ch;
+            }
+
+            next_upper = false;
+        } else if (isAsciiUppercase(ch)) {
+            ss << ch;
+            next_upper = false;
+        } else if (ss.tellp() != 0 && ch >= '0' && ch <= '9') {
+            ss << ch;
+        } else {
+            ss << '_';
+        }
+    }
+
+    return ss.str();
+}
+
 template <std::ranges::random_access_range Range>
     requires std::is_convertible_v<std::ranges::range_value_t<Range>, const char>
-auto write_file_to_header(const std::string &file_name, const Range &range) -> Result {
+auto writeBufferToHeader(const std::string &file_name, const Range &range) -> Result {
     constexpr size_t kColumnWidth = 10;
     constexpr size_t kTabWidth = 4;
 
@@ -63,7 +385,7 @@ auto write_file_to_header(const std::string &file_name, const Range &range) -> R
         return Result::Fail;
     }
 
-    const auto var_name = make_variable_name(file_name);
+    const auto var_name = makeVariableName(file_name);
     const std::string indent_str(kTabWidth, ' ');
 
     fs << "#pragma once" << std::endl;
@@ -88,244 +410,51 @@ auto write_file_to_header(const std::string &file_name, const Range &range) -> R
     return Result::Success;
 }
 
-auto main(int argc, char **argv) -> int {
-    const auto file_args = get_filenames(argc, argv);
-    if (!file_args.has_value()) {
-        fmt::println(stderr, "incorrect usage: {} <input_file> <output_file>", argv[0]);
-        return EXIT_FAILURE;
-    }
+template <std::ranges::random_access_range Range>
+    requires std::is_convertible_v<std::ranges::range_value_t<Range>, const char>
+auto writeBufferToHeaderAndSrc(const std::string &file_name, const Range &range) -> Result {
+    constexpr size_t kColumnWidth = 10;
+    constexpr size_t kTabWidth = 4;
 
-    const bool use_header_output = has_flag(argc, argv, "-h", "--header");
-    const bool use_unpacker = has_flag(argc, argv, "-u", "--unpack");
-    const bool use_passthrough_only = has_flag(argc, argv, "-c", "--copy");
+    const auto data_ptr = std::ranges::data(range);
+    const auto data_size = std::ranges::size(range);
 
-    const auto input_file_name = file_args.value().first;
-    const auto output_file_name = file_args.value().second;
+    const auto cc_name = fmt::format("{}.cpp", file_name);
+    const auto h_name = fmt::format("{}.hpp", file_name);
 
-    std::vector<uint8_t> input_buffer;
-    auto res = read_file_to_buffer(input_file_name, input_buffer);
-    if (Result::Success != res) {
-        fmt::println(stderr, "error: cannot read file {}", input_file_name);
-        return EXIT_FAILURE;
-    }
+    std::ofstream fs_cc{cc_name};
+    std::ofstream fs_h{h_name};
 
-    if (!use_passthrough_only) {
-        std::vector<uint8_t> output_buffer;
-        size_t output_size;
-
-        if (use_unpacker) {
-            res = decompress_to_buffer(input_buffer, output_buffer, output_size);
-            if (Result::Success != res) {
-                fmt::println(stderr, "error: failed to decompress file {}", input_file_name);
-                return EXIT_FAILURE;
-            }
-        } else {
-            res = compress_to_buffer(input_buffer, output_buffer, output_size);
-            if (Result::Success != res) {
-                fmt::println(stderr, "error: failed to compress file {}", input_file_name);
-                return EXIT_FAILURE;
-            }
-        }
-
-        if (use_header_output) {
-            res = write_file_to_header(std::string{output_file_name}, output_buffer | std::views::take(output_size));
-            if (Result::Success != res) {
-                fmt::println(stderr, "error: failed to write file {}", output_file_name);
-                return EXIT_FAILURE;
-            }
-        } else {
-            res = write_buffer_to_file(std::string{output_file_name}, output_buffer | std::views::take(output_size));
-            if (Result::Success != res) {
-                fmt::println(stderr, "error: failed to write file {}", output_file_name);
-                return EXIT_FAILURE;
-            }
-        }
-    } else {
-        if (use_header_output) {
-            res = write_file_to_header(std::string{output_file_name}, input_buffer);
-            if (Result::Success != res) {
-                fmt::println(stderr, "error: failed to write file {}", output_file_name);
-                return EXIT_FAILURE;
-            }
-        } else {
-            res = write_buffer_to_file(std::string{output_file_name}, input_buffer);
-            if (Result::Success != res) {
-                fmt::println(stderr, "error: failed to write file {}", output_file_name);
-                return EXIT_FAILURE;
-            }
-        }
-    }
-
-    return EXIT_SUCCESS;
-}
-
-auto has_flag(int argc, char *const *argv, const std::string_view flag_short, const std::string_view flag_long)
-    -> bool {
-    const auto flag_short_len = flag_short.size();
-    const auto flag_long_len = flag_long.size();
-
-    for (int i = 1; i < argc; ++i) {
-        const char *arg_value = argv[i];
-        const size_t arg_len = strlen(arg_value);
-
-        if (strncmp(arg_value, flag_short.data(), std::min(flag_short_len, arg_len)) == 0) {
-            return true;
-        }
-
-        if (strncmp(arg_value, flag_long.data(), std::min(flag_long_len, arg_len)) == 0) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
-auto get_filenames(int argc, char *const *argv) -> std::optional<std::pair<std::string, std::string>> {
-    std::optional<std::string> input_name;
-    std::optional<std::string> output_name;
-
-    for (int i = 1; i < argc; ++i) {
-        const char *arg_value = argv[i];
-        if (arg_value[0] != '-') {
-            if (!input_name.has_value()) {
-                input_name = std::string{arg_value};
-            } else if (!output_name.has_value()) {
-                output_name = std::string{arg_value};
-            } else {
-                break;
-            }
-        }
-    }
-
-    if (input_name.has_value() && output_name.has_value()) {
-        return std::make_pair(input_name.value(), output_name.value());
-    }
-
-    return {};
-}
-
-auto read_file_to_buffer(const std::string &file_name, std::vector<uint8_t> &buffer) -> Result {
-    std::ifstream fs{file_name, std::ios::binary};
-    if (!fs.good()) {
+    if (!fs_cc.good() || !fs_h.good()) {
         return Result::Fail;
     }
 
-    fs.seekg(0, std::ios::end);
-    const auto file_size = static_cast<size_t>(fs.tellg());
-    fs.seekg(0, std::ios::beg);
+    const auto var_name = makeVariableName(file_name);
+    const std::string indent_str(kTabWidth, ' ');
 
-    buffer.resize(file_size);
-    fs.read(vec_char_ptr_mut(buffer), file_size);
+    fs_h << "#pragma once" << std::endl;
+    fs_h << "#include <cstdint>" << std::endl;
+    fs_h << std::endl;
+    fs_h << "extern const uint64_t k" << var_name << "_size;" << std::endl;
+    fs_h << "extern const uint8_t k" << var_name << "[];" << std::endl;
 
+    fs_cc << "#include \"" << h_name << "\"" << std::endl;
+    fs_cc << std::endl;
+    fs_cc << "const uint64_t k" << var_name << "_size = " << data_size << ";" << std::endl;
+    fs_cc << "const uint8_t k" << var_name << "[k" << var_name << "_size] = {" << std::endl << indent_str;
+
+    for (size_t byte_num = 0; byte_num < data_size; ++byte_num) {
+        uint8_t byte = data_ptr[byte_num];
+        fs_cc << "0x" << std::hex << std::setw(2) << std::setfill('0') << static_cast<uint32_t>(byte);
+        if ((byte_num + 1) % kColumnWidth == 0) {
+            fs_cc << "," << std::endl << indent_str;
+        } else if (byte_num == data_size - 1) {
+            fs_cc << std::endl;
+        } else {
+            fs_cc << ", ";
+        }
+    }
+
+    fs_cc << "};" << std::endl;
     return Result::Success;
-}
-
-constexpr uint32_t kAssetHeader = 0x415354cc;
-
-auto write_uint32(uint8_t *buffer, uint32_t value) -> void {
-    buffer[0] = static_cast<char>(value & 0xff);
-    buffer[1] = static_cast<char>((value >> 8) & 0xff);
-    buffer[2] = static_cast<char>((value >> 16) & 0xff);
-    buffer[3] = static_cast<char>((value >> 24) & 0xff);
-}
-
-auto read_uint32(const uint8_t *buffer) -> uint32_t {
-    return 0U | (static_cast<uint32_t>(buffer[0]) << 0) | (static_cast<uint32_t>(buffer[1]) << 8) |
-           (static_cast<uint32_t>(buffer[2]) << 16) | (static_cast<uint32_t>(buffer[3]) << 24);
-}
-
-auto compress_to_buffer(
-    const std::vector<uint8_t> &input_buffer, std::vector<uint8_t> &output_buffer, size_t &result_size) -> Result {
-    const auto max_compressed_size = LZ4_compressBound(static_cast<int>(input_buffer.size()));
-    const auto decompressed_size = static_cast<uint32_t>(static_cast<int>(input_buffer.size()));
-    const int header_size = 2 * sizeof(uint32_t);
-
-    output_buffer.resize(max_compressed_size + header_size);
-    write_uint32(output_buffer.data(), kAssetHeader);
-    write_uint32(output_buffer.data() + sizeof(uint32_t), decompressed_size);
-
-    const auto compressed_size = LZ4_compress_default(vec_char_ptr(input_buffer),
-        vec_char_ptr_mut(output_buffer) + header_size, static_cast<int>(input_buffer.size()), max_compressed_size);
-
-    if (compressed_size < 0) {
-        fmt::println(stderr, "error: compression error {}", compressed_size);
-        return Result::Fail;
-    }
-
-    fmt::println(stdout, "compressed asset {} bytes -> {} bytes", decompressed_size, compressed_size);
-
-    result_size = compressed_size + header_size;
-    return Result::Success;
-}
-
-auto decompress_to_buffer(
-    const std::vector<uint8_t> &input_buffer, std::vector<uint8_t> &output_buffer, size_t &result_size) -> Result {
-    const int header_size = 2 * sizeof(uint32_t);
-
-    if (input_buffer.size() < header_size) {
-        return Result::Fail;
-    }
-
-    const uint32_t header_magic = read_uint32(input_buffer.data());
-    const uint32_t header_filesize = read_uint32(input_buffer.data() + sizeof(uint32_t));
-
-    if (header_magic != kAssetHeader) {
-        fmt::println(stderr, "error: decompression error, magic mismatch");
-        return Result::Fail;
-    }
-
-    // allocate enough size for the file
-    output_buffer.resize(header_filesize);
-    const auto decompressed_size = LZ4_decompress_safe(vec_char_ptr(input_buffer) + header_size,
-        vec_char_ptr_mut(output_buffer), static_cast<int>(input_buffer.size()) - header_size, header_filesize);
-
-    if (decompressed_size < 0) {
-        fmt::println(stderr, "error: decompression error {}", decompressed_size);
-        return Result::Fail;
-    }
-
-    if (static_cast<uint32_t>(decompressed_size) != header_filesize) {
-        fmt::println(
-            stderr, "error: decompressed size {} does not match header size {}", decompressed_size, header_filesize);
-    }
-
-    result_size = decompressed_size;
-    return Result::Success;
-}
-
-constexpr inline auto is_ascii_lowercase(const char ch) -> bool { return (ch >= 'a' && ch <= 'z'); }
-constexpr inline auto is_ascii_uppercase(const char ch) -> bool { return (ch >= 'A' && ch <= 'Z'); }
-constexpr inline auto to_upper_case(const char ch) -> char { return is_ascii_lowercase(ch) ? 'A' + (ch - 'a') : ch; }
-constexpr inline auto to_lower_case(const char ch) -> char { return is_ascii_uppercase(ch) ? 'a' + (ch - 'A') : ch; }
-
-auto make_variable_name(const std::string &file_name) -> std::string {
-    namespace fs = std::filesystem;
-    const auto path = fs::path{file_name};
-    const auto file = path.stem().string();
-
-    bool next_upper = true;
-    std::ostringstream ss;
-    for (const auto ch : file) {
-        if (ch == '_') {
-            ss << ch;
-            next_upper = true;
-        } else if (is_ascii_lowercase(ch)) {
-            if (next_upper) {
-                ss << to_upper_case(ch);
-            } else {
-                ss << ch;
-            }
-
-            next_upper = false;
-        } else if (is_ascii_uppercase(ch)) {
-            ss << ch;
-            next_upper = false;
-        } else if (ss.tellp() != 0 && ch >= '0' && ch <= '9') {
-            ss << ch;
-        } else {
-            ss << '_';
-        }
-    }
-
-    return ss.str();
 }

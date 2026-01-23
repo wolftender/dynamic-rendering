@@ -1,0 +1,44 @@
+#include <winres.h>
+#include <winver.h>
+#include <ntdef.h>
+
+#include "resource.h"
+
+#ifndef NDEBUG
+#define VER_DBG VS_FF_DEBUG
+#else
+#define VER_DBG 0
+#endif
+
+IDR_APP_ICON        ICON        "@ICON_FILE@"
+IDR_ASSETS          RCDATA      "@ASSETS_FILE@"
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION             1,0,0,0
+PRODUCTVERSION          1,0,0,0
+FILEFLAGSMASK           VS_FFI_FILEFLAGSMASK
+FILEFLAGS               VER_DBG
+FILEOS                  VOS_NT
+FILETYPE                VFT_APP
+FILESUBTYPE             0x0L
+BEGIN
+	BLOCK "StringFileInfo"
+	BEGIN
+		BLOCK "040904b0"
+        BEGIN
+		VALUE "Comments",         "Vulkan App"
+		VALUE "CompanyName",      "https://github.com/wolftender"
+		VALUE "FileDescription",  "Vulkan testing app"
+		VALUE "FileVersion",      "V1.0.0.0"
+		VALUE "InternalName",     "Vulkan testing app"
+		VALUE "LegalCopyright",   "Copyright (c) 2026 by wolftender"
+		VALUE "OriginalFilename", "app.exe"
+		VALUE "ProductName",      "Vulkan App"
+		VALUE "ProductVersion",	  "V1.0.0.0"
+        END
+	END
+	BLOCK "VarFileInfo"
+	BEGIN
+		VALUE "Translation", 0x0409,1200
+	END
+END

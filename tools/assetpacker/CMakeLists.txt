@@ -1,5 +1,7 @@
 ﻿set(ASSET_PACKER_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/main.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/util.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/archive.cpp
 )
 
 add_executable(assetpacker ${ASSET_PACKER_SOURCES})
