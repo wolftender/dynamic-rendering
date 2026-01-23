@@ -7,8 +7,7 @@
 #include "util.hpp"
 #include "vulkan.hpp"
 #include "act.hpp"
-
-// #include "wakamo.act.hpp"
+#include "assets.hpp"
 
 #define GLFW_FATAL_ERROR(glfw_call_name)                                                                               \
     do {                                                                                                               \
@@ -72,15 +71,30 @@ auto main([[maybe_unused]] int argc, [[maybe_unused]] char **argv) -> int {
     LogInfo("compiled with {} on {}", COMPILER_STRING, __DATE__);
 
     // test model loading
-    // const auto decompressed_act = util::decompressBuffer(kWakamo_act);
-    // const auto model = act::Model::loadFromBinary(decompressed_act);
+    const auto main_archive = asset::MainArchive::create();
+    if (!main_archive) {
+        LogError("main archive read failed!");
+        util::reportFatalError("main archive read failed!");
 
-    // if (!model.has_value()) {
-    //     LogError("failed to load act model");
-    //     return EXIT_FAILURE;
-    // }
+        return EXIT_FAILURE;
+    }
 
-    // LogInfo("model has {} nodes", model->nodes.size());
+    const auto act_buffer = main_archive->reader().getFileContent("wakamo.act");
+    if (!act_buffer.has_value()) {
+        LogError("failed to read wakamo.act");
+        util::reportFatalError("missing important resources");
+
+        return EXIT_FAILURE;
+    }
+
+    const auto model = act::Model::loadFromBinary(act_buffer.value());
+
+    if (!model.has_value()) {
+        LogError("failed to load act model");
+        return EXIT_FAILURE;
+    }
+
+    LogInfo("model has {} nodes", model->nodes.size());
 
     ApplicationState::Description app_desc = {
         .title = "vulkan 1.3 dynamic rendering",

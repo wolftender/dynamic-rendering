@@ -8,6 +8,7 @@ set(GAME_SOURCE_FILE_LIST
     ${GAME_SRC_DIR}/util.cpp
     ${GAME_SRC_DIR}/act.cpp
     ${GAME_SRC_DIR}/vulkan.cpp
+    ${GAME_SRC_DIR}/assets.cpp
 )
 
 # compresset assets
