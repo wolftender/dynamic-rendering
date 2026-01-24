@@ -1,6 +1,9 @@
 #pragma once
 #include <memory>
 #include <vector>
+#include <span>
+
+#include <glm/glm.hpp>
 
 #include <vulkan/vulkan.h>
 #include <vulkan/vk_enum_string_helper.h>
@@ -43,6 +46,8 @@ public:
 
     auto memPropFlags() const -> VkMemoryPropertyFlags;
     auto flush(VkDeviceSize offset = 0ull, VkDeviceSize size = VK_WHOLE_SIZE) const;
+
+    auto cpuMappedPointer() const -> void * { return allocation_info_.pMappedData; }
 
 private:
     auto destroy() noexcept -> void;
@@ -121,6 +126,48 @@ public:
         VkExtent2D framebuffer_extent;
     };
 
+    class MemoryHelper final {
+    public:
+        ~MemoryHelper() noexcept;
+
+        MemoryHelper(const MemoryHelper &&) = delete;
+        auto operator=(const MemoryHelper &&) = delete;
+
+        MemoryHelper(MemoryHelper &&) noexcept = delete;
+        auto operator=(MemoryHelper &&) noexcept = delete;
+
+        auto createBuffer(VkBufferUsageFlags usage, std::span<const uint8_t> data) const -> Buffer;
+        auto createStagingBuffer(VkDeviceSize size) const -> Buffer;
+
+        auto createImage(const VkImageCreateInfo &image_info) const -> Image;
+        auto createImage(VkFormat format, VkImageUsageFlags usage, VkImageType type, const VkExtent3D &extent) const
+            -> Image;
+        auto createImageRgba(VkImageUsageFlags usage, VkExtent2D extent, std::span<const uint8_t> data) const -> Image;
+
+        template <std::invocable<VkCommandBuffer> F> auto runOnTransferQueue(F runner) const {
+            beginCommandBuffer();
+            runner(command_buffer_);
+            submitCommandBuffer(upload_semaphore_, ++upload_timeline_);
+        }
+
+    private:
+        static auto create(Context *context) -> std::unique_ptr<MemoryHelper>;
+
+        MemoryHelper() = default;
+
+        auto beginCommandBuffer() const -> void;
+        auto submitCommandBuffer(VkSemaphore semaphore, uint64_t signal_value) const -> void;
+
+        Context *context_ = nullptr;
+
+        mutable uint64_t upload_timeline_ = 0ull;
+        VkSemaphore upload_semaphore_ = VK_NULL_HANDLE;
+        VkCommandPool command_pool_ = VK_NULL_HANDLE;
+        VkCommandBuffer command_buffer_ = VK_NULL_HANDLE;
+
+        friend class Context;
+    };
+
     ~Context() noexcept;
 
     Context(const Context &) = delete;
@@ -138,6 +185,8 @@ public:
     auto presentQueue() const -> VkQueue { return present_queue_; }
     auto graphicsQueue() const -> VkQueue { return graphics_queue_; }
     auto swapchain() const -> VkSwapchainKHR { return swapchain_; }
+    auto memory() -> MemoryHelper & { return *memory_; }
+    auto memory() const -> const MemoryHelper & { return *memory_; }
     auto surfaceExtent() const -> const VkExtent2D & { return surface_extent_; }
     auto graphicsQueueFamily() const -> uint32_t { return graphics_queue_family_; }
     auto presentQueueFamily() const -> uint32_t { return present_queue_family_; }
@@ -146,9 +195,7 @@ public:
     auto framebufferExtent() const -> const VkExtent2D & { return framebuffer_extent_; }
     auto swapchainImages() const -> const std::vector<VkImage> & { return swapchain_images_; }
     auto swapchainImageViews() const -> const std::vector<VkImageView> & { return swapchain_image_views_; }
-
-    auto createImage(const VkImageCreateInfo &image_info) -> Image;
-    auto createImage(VkFormat format, VkImageUsageFlags usage, VkImageType type, const VkExtent3D &extent) -> Image;
+    auto supportedDepthFormat() const -> VkFormat { return supported_depth_format_; }
 
 private:
     static auto create(VkInstance instance, const Description &description) -> std::unique_ptr<Context>;
@@ -167,6 +214,7 @@ private:
 
     VmaVulkanFunctions allocator_funcs_ = {};
     VmaAllocator allocator_ = VK_NULL_HANDLE;
+    std::unique_ptr<MemoryHelper> memory_;
 
     VkExtent2D surface_extent_ = {};
     uint32_t graphics_queue_family_ = 0;
@@ -179,6 +227,12 @@ private:
     uint32_t num_swapchain_images_ = 0;
     std::vector<VkImage> swapchain_images_;
     std::vector<VkImageView> swapchain_image_views_;
+
+    VkFormat supported_depth_format_ = {};
+
+    VkFence immediate_fence_ = VK_NULL_HANDLE;
+    VkCommandBuffer immediate_command_buffer_ = VK_NULL_HANDLE;
+    VkCommandPool immediate_command_pool_ = VK_NULL_HANDLE;
 
     friend class Instance;
 };
@@ -221,6 +275,13 @@ class Renderer final {
 public:
     struct Description {
         Context *context;
+    };
+
+    struct StaticVertex {
+        glm::fvec3 position;
+        glm::fvec3 normal;
+        glm::fvec2 uv;
+        glm::fvec4 tangent;
     };
 
     static auto create(const Description &description) -> std::unique_ptr<Renderer>;
