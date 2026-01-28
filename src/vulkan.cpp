@@ -432,8 +432,8 @@ auto getCompatibleDevices(VkInstance instance, VkSurfaceKHR surface)
         };
 
         vkGetPhysicalDeviceFeatures2(physical_device, &device_features);
-        if (!device_features_12.bufferDeviceAddress || !device_features_12.descriptorIndexing ||
-            !device_features_12.descriptorBindingVariableDescriptorCount ||
+        if (!device_features_12.timelineSemaphore || !device_features_12.bufferDeviceAddress ||
+            !device_features_12.descriptorIndexing || !device_features_12.descriptorBindingVariableDescriptorCount ||
             !device_features_12.runtimeDescriptorArray || !device_features_13.synchronization2 ||
             !device_features_13.dynamicRendering) {
             LogWarning(
@@ -554,6 +554,9 @@ auto Context::create(VkInstance instance, const Description &description) -> std
     context->graphics_queue_family_ = selected_device.second.graphics;
     context->present_queue_family_ = selected_device.second.present;
 
+    // cache physical device properties
+    vkGetPhysicalDeviceProperties(context->physical_device_, &context->phys_dev_props_);
+
     constexpr std::array<float, 1> queue_priorities = {1.0f};
     std::vector<VkDeviceQueueCreateInfo> queue_create_infos = {};
 
@@ -586,6 +589,7 @@ auto Context::create(VkInstance instance, const Description &description) -> std
         .descriptorIndexing = true,
         .descriptorBindingVariableDescriptorCount = true,
         .runtimeDescriptorArray = true,
+        .timelineSemaphore = true,
         .bufferDeviceAddress = true,
     };
 
@@ -632,6 +636,7 @@ auto Context::create(VkInstance instance, const Description &description) -> std
     };
 
     VmaAllocatorCreateInfo allocator_info = {
+        .flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT,
         .physicalDevice = context->physical_device_,
         .device = context->device_,
         .pVulkanFunctions = &context->allocator_funcs_,
@@ -845,6 +850,66 @@ auto Context::MemoryHelper::createStagingBuffer(VkDeviceSize size) const -> Buff
 
     VK_CHECK_ERROR(vmaCreateBuffer(
         context_->allocator_, &staging_buffer_desc, &staging_alloc_info, &vk_buffer, &allocation, &allocation_info));
+
+    Buffer buffer;
+    buffer.device_ = context_->device_;
+    buffer.allocator_ = context_->allocator_;
+    buffer.buffer_ = vk_buffer;
+    buffer.allocation_ = allocation;
+    buffer.allocation_info_ = std::move(allocation_info);
+
+    return buffer;
+}
+
+auto Context::MemoryHelper::createDeviceBuffer(VkBufferUsageFlags usage, VkDeviceSize size) const -> Buffer {
+    VkBufferCreateInfo create_info = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size = size,
+        .usage = usage,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+    };
+
+    VmaAllocationCreateInfo alloc_create_info = {
+        .usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
+        .requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+    };
+
+    VmaAllocation allocation = VK_NULL_HANDLE;
+    VkBuffer vk_buffer = VK_NULL_HANDLE;
+    VmaAllocationInfo allocation_info = {};
+
+    VK_CHECK_ERROR(vmaCreateBuffer(
+        context_->allocator_, &create_info, &alloc_create_info, &vk_buffer, &allocation, &allocation_info));
+
+    Buffer buffer;
+    buffer.device_ = context_->device_;
+    buffer.allocator_ = context_->allocator_;
+    buffer.buffer_ = vk_buffer;
+    buffer.allocation_ = allocation;
+    buffer.allocation_info_ = std::move(allocation_info);
+
+    return buffer;
+}
+
+auto Context::MemoryHelper::createSharedBuffer(VkBufferUsageFlags usage, VkDeviceSize size) const -> Buffer {
+    VkBufferCreateInfo create_info = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size = size,
+        .usage = usage,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+    };
+
+    VmaAllocationCreateInfo alloc_create_info = {
+        .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+        .usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
+    };
+
+    VmaAllocation allocation = VK_NULL_HANDLE;
+    VkBuffer vk_buffer = VK_NULL_HANDLE;
+    VmaAllocationInfo allocation_info = {};
+
+    VK_CHECK_ERROR(vmaCreateBuffer(
+        context_->allocator_, &create_info, &alloc_create_info, &vk_buffer, &allocation, &allocation_info));
 
     Buffer buffer;
     buffer.device_ = context_->device_;
@@ -1149,6 +1214,9 @@ auto Context::createSwapchain() -> void {
 }
 
 Context::~Context() noexcept {
+    // destroy the memory helper explicitly BEFORE the device
+    memory_.reset(nullptr);
+
     if (0 != swapchain_image_views_.size()) {
         for (const auto &image_view : swapchain_image_views_) {
             vkDestroyImageView(device_, image_view, nullptr);
@@ -1194,6 +1262,144 @@ Instance::~Instance() noexcept {
     LogInfo("vulkan: cleanup complete");
 }
 
+template <typename cbBufferDataType> class Renderer::SceneBufferHelper final {
+public:
+    static constexpr auto kDataSize = sizeof(cbBufferDataType);
+
+    static auto create(Renderer *renderer) -> std::unique_ptr<SceneBufferHelper<cbBufferDataType>> {
+        std::unique_ptr<SceneBufferHelper<cbBufferDataType>> buffer_helper{new (std::nothrow)
+                                                                               SceneBufferHelper<cbBufferDataType>()};
+
+        if (!buffer_helper) {
+            LogError("vulkan: failed to allocate buffer helper");
+            return nullptr;
+        }
+
+        buffer_helper->renderer_ = renderer;
+        buffer_helper->context_ = buffer_helper->renderer_->context_;
+
+        buffer_helper->device_buffer_ = buffer_helper->context_->memory().createDeviceBuffer(
+            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, kDataSize);
+        buffer_helper->staging_buffer_ =
+            buffer_helper->context_->memory().createSharedBuffer(VK_BUFFER_USAGE_TRANSFER_SRC_BIT, kDataSize);
+
+        VkBufferDeviceAddressInfo addr_info = {
+            .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
+            .buffer = buffer_helper->device_buffer_.buffer(),
+        };
+
+        buffer_helper->device_address_ = vkGetBufferDeviceAddress(buffer_helper->context_->device(), &addr_info);
+        buffer_helper->data_ = reinterpret_cast<cbBufferDataType *>(buffer_helper->staging_buffer_.cpuMappedPointer());
+
+        ::memset(buffer_helper->data_, 0, kDataSize);
+        return buffer_helper;
+    }
+
+    ~SceneBufferHelper() = default;
+
+    SceneBufferHelper(const SceneBufferHelper &) = delete;
+    auto operator=(const SceneBufferHelper &) = delete;
+
+    SceneBufferHelper(SceneBufferHelper &&) noexcept = delete;
+    auto operator=(SceneBufferHelper &&) noexcept = delete;
+
+    auto stagingBuffer() const -> const Buffer & { return staging_buffer_; }
+    auto deviceBuffer() const -> const Buffer & { return device_buffer_; }
+    auto deviceAddress() const -> VkDeviceAddress { return device_address_; }
+
+    auto storage() -> cbBufferDataType & { return *data_; }
+    auto storage() const -> const cbBufferDataType & { return *data_; }
+
+    auto upload(VkCommandBuffer command_buffer) -> void {
+        // buffer don't care -> transfer dst
+        VkBufferMemoryBarrier2 barrier_unknown_to_transfer_dst = {
+            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+            .srcStageMask = VK_PIPELINE_STAGE_2_NONE,
+            .srcAccessMask = 0,
+            .dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+            .dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            .buffer = device_buffer_.buffer(),
+            .offset = 0,
+            .size = VK_WHOLE_SIZE,
+        };
+
+        VkDependencyInfo dep_unknown_to_transfer_dst = {
+            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+            .bufferMemoryBarrierCount = 1,
+            .pBufferMemoryBarriers = &barrier_unknown_to_transfer_dst,
+        };
+
+        vkCmdPipelineBarrier2(command_buffer, &dep_unknown_to_transfer_dst);
+
+        // copy
+        VkBufferCopy buffer_copy = {
+            .srcOffset = 0,
+            .dstOffset = 0,
+            .size = VK_WHOLE_SIZE,
+        };
+
+        vkCmdCopyBuffer(command_buffer, staging_buffer_.buffer(), device_buffer_.buffer(), 1, &buffer_copy);
+
+        // buffer transfer dst -> shader read
+        VkBufferMemoryBarrier2 barrier_transfer_dst_to_shader_read = {
+            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+            .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+            .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+            .dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT,
+            .buffer = device_buffer_.buffer(),
+            .offset = 0,
+            .size = VK_WHOLE_SIZE,
+        };
+
+        VkDependencyInfo dep_transfer_dst_to_shader_read = {
+            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+            .bufferMemoryBarrierCount = 1,
+            .pBufferMemoryBarriers = &barrier_transfer_dst_to_shader_read,
+        };
+
+        vkCmdPipelineBarrier2(command_buffer, &dep_transfer_dst_to_shader_read);
+    }
+
+private:
+    SceneBufferHelper() = default;
+
+    cbBufferDataType *data_ = nullptr;
+
+    Buffer staging_buffer_ = {};
+    Buffer device_buffer_ = {};
+    VkDeviceAddress device_address_ = {};
+
+    Context *context_ = nullptr;
+    Renderer *renderer_ = nullptr;
+};
+
+auto Renderer::Mesh::create(
+    Renderer *renderer, std::span<const uint8_t> vertex_buffer, uint32_t num_vertices, std::span<uint32_t> indices)
+    -> std::unique_ptr<Mesh> {
+    std::unique_ptr<Mesh> mesh{new (std::nothrow) Mesh()};
+    if (!mesh) {
+        LogError("vulkan: failed to allocate mesh object");
+        return nullptr;
+    }
+
+    const auto &memory = mesh->renderer_->context_->memory();
+    mesh->renderer_ = renderer;
+
+    mesh->num_vertices_ = num_vertices;
+    mesh->num_indices_ = std::size(indices);
+
+    mesh->vertex_buffer_size_ = vertex_buffer.size();
+    mesh->index_buffer_size_ = indices.size() * sizeof(uint32_t);
+
+    mesh->vertex_buffer_ = memory.createBuffer(VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, vertex_buffer);
+    mesh->index_bufer_ = memory.createBuffer(
+        VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+        std::span<const uint8_t>{reinterpret_cast<const uint8_t *>(indices.data()), mesh->index_buffer_size_});
+
+    return mesh;
+}
+
 auto Renderer::create(const Description &description) -> std::unique_ptr<Renderer> {
     std::unique_ptr<Renderer> renderer{new (std::nothrow) Renderer()};
     if (!renderer) {
@@ -1220,6 +1426,35 @@ auto Renderer::create(const Description &description) -> std::unique_ptr<Rendere
     renderer->depth_buffer_ = renderer->context_->memory().createImage(depth_buffer_info);
     renderer->depth_buffer_view_ = renderer->depth_buffer_.createView(
         VK_IMAGE_VIEW_TYPE_2D, VK_FORMAT_D24_UNORM_S8_UINT, VK_IMAGE_ASPECT_DEPTH_BIT);
+
+    for (size_t i = 0; i < kNumFramesInFlight; ++i) {
+        renderer->frames_[i].scene_buffer = SceneBufferHelper<cbSceneHeapBuffer>::create(renderer.get());
+    }
+
+    // allocate command buffers
+    VkCommandPoolCreateInfo command_pool_info = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+        .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+        .queueFamilyIndex = renderer->context_->graphicsQueueFamily(),
+    };
+
+    VK_CHECK_ERROR(
+        vkCreateCommandPool(renderer->context_->device(), &command_pool_info, nullptr, &renderer->command_pool_));
+
+    VkCommandBufferAllocateInfo command_buffers_info = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .commandPool = renderer->command_pool_,
+        .commandBufferCount = kNumFramesInFlight,
+    };
+
+    std::array<VkCommandBuffer, kNumFramesInFlight> command_buffers;
+
+    VK_CHECK_ERROR(
+        vkAllocateCommandBuffers(renderer->context_->device(), &command_buffers_info, command_buffers.data()));
+
+    for (size_t i = 0; i < kNumFramesInFlight; ++i) {
+        renderer->frames_[i].command_buffer = command_buffers[i];
+    }
 
     return renderer;
 }

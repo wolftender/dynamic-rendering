@@ -1,4 +1,5 @@
 #pragma once
+#include <array>
 #include <memory>
 #include <vector>
 #include <span>
@@ -8,6 +9,8 @@
 #include <vulkan/vulkan.h>
 #include <vulkan/vk_enum_string_helper.h>
 #include <vk_mem_alloc.h>
+
+#include "util.hpp"
 
 namespace graphics {
 
@@ -29,6 +32,11 @@ namespace graphics {
             return result                                                                                              \
         }                                                                                                              \
     } while (false);
+
+template <typename T>
+concept VertexType = requires() {
+    { T::layout() } -> std::convertible_to<std::span<VkVertexInputAttributeDescription>>;
+};
 
 class Buffer final {
 public:
@@ -138,6 +146,8 @@ public:
 
         auto createBuffer(VkBufferUsageFlags usage, std::span<const uint8_t> data) const -> Buffer;
         auto createStagingBuffer(VkDeviceSize size) const -> Buffer;
+        auto createDeviceBuffer(VkBufferUsageFlags usage, VkDeviceSize size) const -> Buffer;
+        auto createSharedBuffer(VkBufferUsageFlags usage, VkDeviceSize size) const -> Buffer;
 
         auto createImage(const VkImageCreateInfo &image_info) const -> Image;
         auto createImage(VkFormat format, VkImageUsageFlags usage, VkImageType type, const VkExtent3D &extent) const
@@ -181,6 +191,7 @@ public:
     auto instance() const -> VkInstance { return instance_; }
     auto surface() const -> VkSurfaceKHR { return surface_; }
     auto physicalDevice() const -> VkPhysicalDevice { return physical_device_; }
+    auto physicalDeviceProperies() const -> const VkPhysicalDeviceProperties & { return phys_dev_props_; }
     auto device() const -> VkDevice { return device_; }
     auto presentQueue() const -> VkQueue { return present_queue_; }
     auto graphicsQueue() const -> VkQueue { return graphics_queue_; }
@@ -207,6 +218,7 @@ private:
     VkInstance instance_ = VK_NULL_HANDLE;
     VkSurfaceKHR surface_ = VK_NULL_HANDLE;
     VkPhysicalDevice physical_device_ = VK_NULL_HANDLE;
+    VkPhysicalDeviceProperties phys_dev_props_ = {};
     VkDevice device_ = VK_NULL_HANDLE;
     VkQueue present_queue_ = VK_NULL_HANDLE;
     VkQueue graphics_queue_ = VK_NULL_HANDLE;
@@ -273,6 +285,12 @@ private:
 
 class Renderer final {
 public:
+    static constexpr uint32_t kNumFramesInFlight = 2;
+    static constexpr uint32_t kNumMaxPointLights = 20;
+    static constexpr uint32_t kNumMaxStaticObjects = 2048;
+    static constexpr uint32_t kNumMaxSkinnedObjects = 128;
+    static constexpr uint32_t kNumMaxBonesPerObject = 200;
+
     struct Description {
         Context *context;
     };
@@ -283,6 +301,82 @@ public:
         glm::fvec2 uv;
         glm::fvec4 tangent;
     };
+
+    struct cbSceneHeapBuffer {
+        struct cbPointLightData {
+            glm::fvec4 world_position;
+            glm::fvec4 color_intensity;
+        };
+
+        struct cbStaticObjectData {
+            glm::fmat4x4 world;
+        };
+
+        struct cbSkinnedObjectData {
+            glm::fmat4x4 world;
+            std::array<glm::fmat4x4, kNumMaxBonesPerObject> bones;
+        };
+
+        glm::fmat4x4 projection;
+        glm::fmat4x4 view;
+
+        glm::fmat4x4 projection_inv;
+        glm::fmat4x4 view_inv;
+
+        glm::fvec4 ambient;
+        std::array<cbPointLightData, kNumMaxPointLights> point_lights;
+        std::array<cbStaticObjectData, kNumMaxStaticObjects> static_objects;
+        std::array<cbSkinnedObjectData, kNumMaxSkinnedObjects> skinned_objects;
+
+        uint32_t num_lights, num_static_objects, num_skinned_objects; // active
+    };
+
+    class Mesh final {
+    public:
+        Mesh(const Mesh &) = delete;
+        auto operator=(const Mesh &) = delete;
+
+        Mesh(Mesh &&) noexcept = delete;
+        auto operator=(Mesh &&) noexcept = delete;
+
+        ~Mesh() noexcept = default;
+
+        auto numVertices() const -> uint32_t { return num_vertices_; }
+        auto numIndices() const -> uint32_t { return num_indices_; }
+
+        auto vertexBuffer() const -> const Buffer & { return vertex_buffer_; }
+        auto indexBuffer() const -> const Buffer & { return index_bufer_; }
+
+        auto vertexBufferSize() const -> VkDeviceSize { return vertex_buffer_size_; }
+        auto indexBufferSize() const -> VkDeviceSize { return index_buffer_size_; }
+
+    private:
+        static auto create(
+            Renderer *renderer, std::span<const uint8_t> vertex_buffer, uint32_t num_vertices,
+            std::span<uint32_t> indices) -> std::unique_ptr<Mesh>;
+
+        Mesh() = default;
+
+        Renderer *renderer_ = nullptr;
+        uint32_t num_vertices_, num_indices_;
+
+        Buffer vertex_buffer_;
+        Buffer index_bufer_;
+
+        VkDeviceSize vertex_buffer_size_;
+        VkDeviceSize index_buffer_size_;
+
+        friend class Renderer;
+    };
+
+    template <VertexType V, util::TypedContiguousRange<V> VR, util::TypedContiguousRange<uint32_t> IR>
+    auto createMesh(const VR &vertex_input_range, const IR &index_input_range) -> std::unique_ptr<Mesh> {
+        const auto vertex_buffer_ptr = reinterpret_cast<const uint8_t *>(std::ranges::data(vertex_input_range));
+        const auto vertex_buffer_size = std::ranges::size(vertex_input_range) * sizeof(V);
+
+        return Mesh::create(
+            this, {vertex_buffer_ptr, vertex_buffer_size}, std::ranges::size(vertex_input_range), index_input_range);
+    }
 
     static auto create(const Description &description) -> std::unique_ptr<Renderer>;
 
@@ -301,6 +395,17 @@ private:
 
     Image depth_buffer_;
     Image::View depth_buffer_view_;
+
+    template <typename cbBufferDataType> class SceneBufferHelper;
+
+    struct FrameData {
+        std::unique_ptr<SceneBufferHelper<cbSceneHeapBuffer>> scene_buffer;
+        VkCommandBuffer command_buffer;
+    };
+
+    VkCommandPool command_pool_;
+    std::array<FrameData, kNumFramesInFlight> frames_;
+    uint32_t current_frame_;
 };
 
 }; // namespace graphics

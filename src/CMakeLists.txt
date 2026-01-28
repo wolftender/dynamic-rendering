@@ -63,7 +63,7 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE COMPILER_STRING="${COMPILER_S
 
 target_link_options(${PROJECT_NAME} PRIVATE ${SUBSYSTEM_LINKER_OPTIONS})
 target_link_libraries(thirdparty volk::volk GPUOpen::VulkanMemoryAllocator)
-target_link_libraries(${PROJECT_NAME} PRIVATE $<TARGET_OBJECTS:thirdparty> volk::volk glfw fmt::fmt glm::glm lz4_static GPUOpen::VulkanMemoryAllocator)
+target_link_libraries(${PROJECT_NAME} PRIVATE $<TARGET_OBJECTS:thirdparty> glm::glm volk::volk glfw fmt::fmt lz4_static GPUOpen::VulkanMemoryAllocator)
 
 if(MSVC)
     target_compile_options(${PROJECT_NAME} PRIVATE /W4 /WX)
