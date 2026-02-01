@@ -940,6 +940,7 @@ auto Context::MemoryHelper::createImage(const VkImageCreateInfo &image_info) con
     image.image_ = vk_image;
     image.allocation_ = allocation;
     image.allocation_info_ = std::move(allocation_info);
+    image.format_ = image_info.format;
 
     return image;
 }
@@ -1001,6 +1002,7 @@ auto Context::MemoryHelper::createImageRgba(
     image.image_ = vk_image;
     image.allocation_ = allocation;
     image.allocation_info_ = std::move(allocation_info);
+    image.format_ = VK_FORMAT_R8G8B8A8_SRGB;
 
     runOnTransferQueue([&](VkCommandBuffer command_buffer) {
         VkImageSubresourceRange range = {
@@ -1400,6 +1402,161 @@ auto Renderer::Mesh::create(
     return mesh;
 }
 
+auto Renderer::Texture::fromRgba(Renderer *renderer, const Description &desc, std::span<const uint8_t> rgba_data)
+    -> std::unique_ptr<Texture> {
+    std::unique_ptr<Texture> texture{new (std::nothrow) Texture()};
+    if (!texture) {
+        LogError("vulkan: failed to allocate texture");
+        return nullptr;
+    }
+
+    texture->renderer_ = renderer;
+    texture->description_ = desc;
+
+    VkFilter min_filter, mag_filter;
+    switch (desc.min_filter) {
+    case MinFilter::eLinear:
+        min_filter = VK_FILTER_LINEAR;
+        break;
+    case MinFilter::eNearest:
+        min_filter = VK_FILTER_NEAREST;
+        break;
+    default:
+        LogError("vulkan: invalid texture min filter");
+        return nullptr;
+    }
+
+    switch (desc.mag_filter) {
+    case MagFilter::eLinear:
+        mag_filter = VK_FILTER_LINEAR;
+        break;
+    case MagFilter::eNearest:
+        mag_filter = VK_FILTER_NEAREST;
+        break;
+    default:
+        LogError("vulkan: invalid texture min filter");
+        return nullptr;
+    }
+
+    texture->image_ = texture->renderer_->context_->memory().createImageRgba(
+        VK_IMAGE_USAGE_SAMPLED_BIT, {desc.width, desc.height}, rgba_data);
+    texture->image_view_ =
+        texture->image().createView(VK_IMAGE_VIEW_TYPE_2D, texture->image().format(), VK_IMAGE_ASPECT_COLOR_BIT);
+
+    VkSamplerCreateInfo sampler_desc = {
+        .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+        .magFilter = mag_filter,
+        .minFilter = min_filter,
+        .mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
+        .anisotropyEnable = VK_TRUE,
+        .maxAnisotropy = 8.0f,
+        .maxLod = 1,
+    };
+
+    VK_CHECK_ERROR(vkCreateSampler(texture->renderer_->context_->device(), &sampler_desc, nullptr, &texture->sampler_));
+    return texture;
+}
+
+Renderer::Texture::~Texture() noexcept {
+    if (VK_NULL_HANDLE != sampler_) {
+        vkDestroySampler(renderer_->context_->device(), sampler_, nullptr);
+        sampler_ = VK_NULL_HANDLE;
+    }
+}
+
+Renderer::TexturePool::TexturePool() {
+    for (uint32_t i = 0; i < kNumTexturePoolSize; ++i) {
+        free_list_.push_back(i);
+        descriptors_[i].imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        descriptors_[i].imageView = VK_NULL_HANDLE;
+        descriptors_[i].sampler = VK_NULL_HANDLE;
+        textures_[i] = nullptr;
+    }
+}
+
+auto Renderer::TexturePool::get(uint32_t handle) const -> const Texture * {
+    if (handle > textures_.size() || !textures_[handle]) {
+        return nullptr;
+    }
+
+    return textures_[handle].get();
+}
+
+auto Renderer::TexturePool::insert(std::unique_ptr<Texture> texture) -> std::optional<uint32_t> {
+    if (free_list_.empty()) {
+        return std::nullopt;
+    }
+
+    auto slot = free_list_.front();
+    free_list_.pop_front();
+
+    textures_[slot] = std::move(texture);
+    const auto &t = *textures_[slot].get();
+
+    descriptors_[slot].imageLayout = VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL;
+    descriptors_[slot].imageView = t.imageView().view();
+    descriptors_[slot].sampler = t.sampler();
+
+    return slot;
+}
+
+auto Renderer::TexturePool::erase(uint32_t handle) -> std::unique_ptr<Texture> {
+    if (handle > textures_.size() || !textures_[handle]) {
+        return nullptr;
+    }
+
+    descriptors_[handle].imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    descriptors_[handle].imageView = VK_NULL_HANDLE;
+    descriptors_[handle].sampler = VK_NULL_HANDLE;
+
+    auto texture = std::move(textures_[handle]);
+    free_list_.push_front(handle);
+
+    return texture;
+}
+
+Renderer::TexturePool::~TexturePool() noexcept {}
+
+Renderer::MeshPool::MeshPool() {
+    for (uint32_t i = 0; i < kNumMeshPoolSize; ++i) {
+        free_list_.push_back(i);
+        meshes_[i] = nullptr;
+    }
+}
+
+auto Renderer::MeshPool::get(uint32_t handle) const -> const Mesh * {
+    if (handle > meshes_.size() || !meshes_[handle]) {
+        return nullptr;
+    }
+
+    return meshes_[handle].get();
+}
+
+auto Renderer::MeshPool::insert(std::unique_ptr<Mesh> mesh) -> std::optional<uint32_t> {
+    if (free_list_.empty()) {
+        return std::nullopt;
+    }
+
+    auto slot = free_list_.front();
+    free_list_.pop_front();
+
+    meshes_[slot] = std::move(mesh);
+    return slot;
+}
+
+auto Renderer::MeshPool::erase(uint32_t handle) -> std::unique_ptr<Mesh> {
+    if (handle > meshes_.size() || !meshes_[handle]) {
+        return nullptr;
+    }
+
+    auto mesh = std::move(meshes_[handle]);
+    free_list_.push_front(handle);
+
+    return mesh;
+}
+
+Renderer::MeshPool::~MeshPool() noexcept {}
+
 auto Renderer::create(const Description &description) -> std::unique_ptr<Renderer> {
     std::unique_ptr<Renderer> renderer{new (std::nothrow) Renderer()};
     if (!renderer) {
@@ -1456,9 +1613,128 @@ auto Renderer::create(const Description &description) -> std::unique_ptr<Rendere
         renderer->frames_[i].command_buffer = command_buffers[i];
     }
 
+    VkSemaphoreCreateInfo semaphore_desc = {
+        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+    };
+
+    VkFenceCreateInfo fence_desc = {
+        .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+        .flags = VK_FENCE_CREATE_SIGNALED_BIT,
+    };
+
+    // synchronization structures
+    for (size_t i = 0; i < kNumFramesInFlight; ++i) {
+        auto &frame = renderer->frames_[i];
+        VK_CHECK_ERROR(vkCreateFence(renderer->context_->device(), &fence_desc, nullptr, &frame.fence));
+        VK_CHECK_ERROR(
+            vkCreateSemaphore(renderer->context_->device(), &semaphore_desc, nullptr, &frame.present_semaphore));
+    }
+
+    const auto num_swapchain_images = renderer->context_->swapchainImages().size();
+
+    renderer->swapchain_data_.resize(num_swapchain_images);
+    for (size_t i = 0; i < num_swapchain_images; ++i) {
+        VK_CHECK_ERROR(vkCreateSemaphore(
+            renderer->context_->device(), &semaphore_desc, nullptr, &renderer->swapchain_data_[i].render_semaphore));
+    }
+
+    // texture descriptor pool
+    VkDescriptorBindingFlags desc_flags = VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT;
+    VkDescriptorSetLayoutBindingFlagsCreateInfo desc_binding_flags_desc = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
+        .bindingCount = 1,
+        .pBindingFlags = &desc_flags,
+    };
+
+    VkDescriptorSetLayoutBinding desc_layout_binding_desc = {
+        .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        .descriptorCount = kNumTexturePoolSize,
+        .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+    };
+
+    VkDescriptorSetLayoutCreateInfo desc_layout_desc = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        .pNext = &desc_binding_flags_desc,
+        .bindingCount = 1,
+        .pBindings = &desc_layout_binding_desc,
+    };
+
+    VK_CHECK_ERROR(vkCreateDescriptorSetLayout(
+        renderer->context_->device(), &desc_layout_desc, nullptr, &renderer->desc_set_layout_graphics_));
+
+    VkDescriptorPoolSize desc_pool_size = {
+        .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        .descriptorCount = kNumTexturePoolSize,
+    };
+
+    VkDescriptorPoolCreateInfo desc_pool_info = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+        .maxSets = 1,
+        .poolSizeCount = 1,
+        .pPoolSizes = &desc_pool_size,
+    };
+
+    VK_CHECK_ERROR(
+        vkCreateDescriptorPool(renderer->context_->device(), &desc_pool_info, nullptr, &renderer->desc_pool_graphics_));
+
+    VkDescriptorSetVariableDescriptorCountAllocateInfo variable_desc_info = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO,
+        .descriptorSetCount = 1,
+        .pDescriptorCounts = &kNumTexturePoolSize,
+    };
+
+    VkDescriptorSetAllocateInfo texture_desc_set_info = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .pNext = &variable_desc_info,
+        .descriptorPool = renderer->desc_pool_graphics_,
+        .descriptorSetCount = 1,
+        .pSetLayouts = &renderer->desc_set_layout_graphics_,
+    };
+
+    VK_CHECK_ERROR(
+        vkAllocateDescriptorSets(renderer->context_->device(), &texture_desc_set_info, &renderer->desc_set_graphics_));
+
     return renderer;
 }
 
-Renderer::~Renderer() noexcept {}
+Renderer::~Renderer() noexcept {
+    LogInfo("vulkan: releasing renderer resources");
+
+    if (VK_NULL_HANDLE != desc_set_layout_graphics_) {
+        vkDestroyDescriptorSetLayout(context_->device(), desc_set_layout_graphics_, nullptr);
+        desc_set_layout_graphics_ = VK_NULL_HANDLE;
+    }
+
+    if (VK_NULL_HANDLE != desc_pool_graphics_) {
+        vkDestroyDescriptorPool(context_->device(), desc_pool_graphics_, nullptr);
+        desc_pool_graphics_ = VK_NULL_HANDLE;
+    }
+
+    if (VK_NULL_HANDLE != command_pool_) {
+        vkDestroyCommandPool(context_->device(), command_pool_, nullptr);
+        command_pool_ = VK_NULL_HANDLE;
+    }
+
+    for (size_t i = 0; i < kNumFramesInFlight; ++i) {
+        auto &frame = frames_[i];
+
+        if (VK_NULL_HANDLE != frame.fence) {
+            vkDestroyFence(context_->device(), frame.fence, nullptr);
+            frame.fence = VK_NULL_HANDLE;
+        }
+
+        if (VK_NULL_HANDLE != frame.present_semaphore) {
+            vkDestroySemaphore(context_->device(), frame.present_semaphore, nullptr);
+            frame.present_semaphore = VK_NULL_HANDLE;
+        }
+    }
+
+    for (auto &image_data : swapchain_data_) {
+        if (VK_NULL_HANDLE != image_data.render_semaphore) {
+            vkDestroySemaphore(context_->device(), image_data.render_semaphore, nullptr);
+            image_data.render_semaphore = VK_NULL_HANDLE;
+        }
+    }
+}
 
 } // namespace graphics
