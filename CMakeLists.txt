@@ -108,6 +108,21 @@ function(add_asset_uncompressed FILE)
     set_property(GLOBAL PROPERTY PACKER_UNCOMPRESSED_ASSETS "${list}")
 endfunction()
 
+function(add_slang_shader FILE)
+    get_filename_component(FILE_BASE_NAME ${FILE} NAME_WE)
+    set(SPV_FILE_NAME "${CMAKE_CURRENT_BINARY_DIR}/${FILE_BASE_NAME}.spv")
+
+    add_custom_command(
+        OUTPUT ${SPV_FILE_NAME}
+        COMMAND slangc ${FILE} -target spirv -o ${SPV_FILE_NAME}
+        DEPENDS ${FILE}
+        COMMENT "compiling shader ${FILE} -> ${SPV_FILE_NAME}"
+        VERBATIM
+    )
+
+    add_asset_uncompressed(${SPV_FILE_NAME})
+endfunction()
+
 function(add_packed_assets OUTPUT_FILE)
     get_property(C_ASSETS GLOBAL PROPERTY PACKER_COMPRESSED_ASSETS)
     get_property(U_ASSETS GLOBAL PROPERTY PACKER_UNCOMPRESSED_ASSETS)
@@ -135,7 +150,6 @@ function(add_packed_assets OUTPUT_FILE)
     add_custom_target(packed_assets ALL
         DEPENDS "${OUTPUT_FILE}"
     )
-
 endfunction()
 
 add_subdirectory(src)

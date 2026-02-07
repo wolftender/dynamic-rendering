@@ -8,10 +8,12 @@ set(GAME_SOURCE_FILE_LIST
     ${GAME_SRC_DIR}/util.cpp
     ${GAME_SRC_DIR}/act.cpp
     ${GAME_SRC_DIR}/vulkan.cpp
+    ${GAME_SRC_DIR}/renderer.cpp
     ${GAME_SRC_DIR}/assets.cpp
 )
 
 # compresset assets
+add_slang_shader(${GAME_SRC_DIR}/shaders/shader.slang)
 add_asset_compressed(${ASSET_DIR}/wakamo.act)
 add_packed_assets(${CMAKE_CURRENT_BINARY_DIR}/assets.arc)
 

@@ -6,6 +6,7 @@
 #include "logger.hpp"
 #include "util.hpp"
 #include "vulkan.hpp"
+#include "renderer.hpp"
 #include "act.hpp"
 #include "assets.hpp"
 
@@ -54,7 +55,20 @@ public:
     auto operator=(ApplicationState &&) noexcept = delete;
 
 private:
+    class ShaderLoaderImpl : public graphics::Renderer::IShaderLoader {
+    public:
+        ShaderLoaderImpl(const asset::ArchiveReader *archive);
+        ~ShaderLoaderImpl() = default;
+
+        auto loadGeometryPassShader() const -> std::optional<std::vector<uint32_t>> override;
+
+    private:
+        const asset::ArchiveReader *archive_ = nullptr;
+    };
+
     ApplicationState() = default;
+
+    std::unique_ptr<asset::MainArchive> main_archive_ = {};
 
     GLFWwindow *window_handle_ = nullptr;
     std::unique_ptr<graphics::Instance> graphics_instance_ = {};
@@ -70,32 +84,6 @@ auto main([[maybe_unused]] int argc, [[maybe_unused]] char **argv) -> int {
 
     LogInfo("compiled with {} on {}", COMPILER_STRING, __DATE__);
 
-    // test model loading
-    const auto main_archive = asset::MainArchive::create();
-    if (!main_archive) {
-        LogError("main archive read failed!");
-        util::reportFatalError("main archive read failed!");
-
-        return EXIT_FAILURE;
-    }
-
-    const auto act_buffer = main_archive->reader().getFileContent("wakamo.act");
-    if (!act_buffer.has_value()) {
-        LogError("failed to read wakamo.act");
-        util::reportFatalError("missing important resources");
-
-        return EXIT_FAILURE;
-    }
-
-    const auto model = act::Model::loadFromBinary(act_buffer.value());
-
-    if (!model.has_value()) {
-        LogError("failed to load act model");
-        return EXIT_FAILURE;
-    }
-
-    LogInfo("model has {} nodes", model->nodes.size());
-
     ApplicationState::Description app_desc = {
         .title = "vulkan 1.3 dynamic rendering",
         .window_width = 1366,
@@ -110,6 +98,30 @@ auto main([[maybe_unused]] int argc, [[maybe_unused]] char **argv) -> int {
     return 0;
 }
 
+ApplicationState::ShaderLoaderImpl::ShaderLoaderImpl(const asset::ArchiveReader *archive) : archive_{archive} {}
+
+auto ApplicationState::ShaderLoaderImpl::loadGeometryPassShader() const -> std::optional<std::vector<uint32_t>> {
+    const auto buffer = archive_->getFileContent("shader.spv");
+    if (!buffer) {
+        LogError("failed to load shader.spv");
+        return std::nullopt;
+    }
+
+    constexpr auto kWordSize = sizeof(uint32_t);
+    if (buffer->size() % kWordSize != 0) {
+        LogError("invalid alignment of spir-v bytecode");
+        return std::nullopt;
+    }
+
+    const auto size_in_words = buffer->size() / kWordSize;
+    std::vector<uint32_t> spv_buffer;
+
+    spv_buffer.resize(size_in_words);
+    ::memcpy(spv_buffer.data(), buffer->data(), size_in_words * sizeof(uint32_t));
+
+    return spv_buffer;
+}
+
 auto ApplicationState::create(const Description &description) -> std::unique_ptr<ApplicationState> {
     std::unique_ptr<ApplicationState> state{new (std::nothrow) ApplicationState()};
     if (!state) {
@@ -118,6 +130,35 @@ auto ApplicationState::create(const Description &description) -> std::unique_ptr
 
         return nullptr;
     }
+
+    state->main_archive_ = asset::MainArchive::create();
+    if (!state->main_archive_) {
+        LogError("fatal: cannot open main archive");
+        util::reportFatalError("cannot open main asset archive");
+
+        return nullptr;
+    }
+
+    // test
+
+    const auto act_buffer = state->main_archive_->reader().getFileContent("wakamo.act");
+    if (!act_buffer.has_value()) {
+        LogError("failed to read wakamo.act");
+        util::reportFatalError("missing important resources");
+
+        return nullptr;
+    }
+
+    const auto model = act::Model::loadFromBinary(act_buffer.value());
+
+    if (!model.has_value()) {
+        LogError("failed to load act model");
+        return nullptr;
+    }
+
+    LogInfo("model has {} nodes", model->nodes.size());
+
+    // end test
 
     if (!glfwInit()) {
         GLFW_FATAL_ERROR("glfwInit");
@@ -171,6 +212,7 @@ auto ApplicationState::create(const Description &description) -> std::unique_ptr
 
     graphics::Renderer::Description renderer_desc = {
         .context = state->graphics_context_.get(),
+        .shader_loader = std::make_unique<ShaderLoaderImpl>(&state->main_archive_->reader()),
     };
 
     state->renderer_ = graphics::Renderer::create(renderer_desc);
