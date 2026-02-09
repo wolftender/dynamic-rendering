@@ -54,6 +54,8 @@ public:
     ApplicationState(ApplicationState &&) noexcept = delete;
     auto operator=(ApplicationState &&) noexcept = delete;
 
+    auto run() -> util::Result;
+
 private:
     class ShaderLoaderImpl : public graphics::Renderer::IShaderLoader {
     public:
@@ -66,6 +68,8 @@ private:
         const asset::ArchiveReader *archive_ = nullptr;
     };
 
+    auto loadMeshes() -> util::Result;
+
     ApplicationState() = default;
 
     std::unique_ptr<asset::MainArchive> main_archive_ = {};
@@ -74,6 +78,8 @@ private:
     std::unique_ptr<graphics::Instance> graphics_instance_ = {};
     std::unique_ptr<graphics::Context> graphics_context_ = {};
     std::unique_ptr<graphics::Renderer> renderer_ = {};
+
+    std::optional<graphics::Renderer::MeshId> test_mesh_ = {};
 };
 
 auto main([[maybe_unused]] int argc, [[maybe_unused]] char **argv) -> int {
@@ -95,7 +101,13 @@ auto main([[maybe_unused]] int argc, [[maybe_unused]] char **argv) -> int {
         return EXIT_FAILURE;
     }
 
-    return 0;
+    auto result = app_state->run();
+    if (util::Result::eSuccess != result) {
+        util::reportFatalError("application returned error code");
+        return EXIT_FAILURE;
+    }
+
+    return EXIT_SUCCESS;
 }
 
 ApplicationState::ShaderLoaderImpl::ShaderLoaderImpl(const asset::ArchiveReader *archive) : archive_{archive} {}
@@ -138,27 +150,6 @@ auto ApplicationState::create(const Description &description) -> std::unique_ptr
 
         return nullptr;
     }
-
-    // test
-
-    const auto act_buffer = state->main_archive_->reader().getFileContent("wakamo.act");
-    if (!act_buffer.has_value()) {
-        LogError("failed to read wakamo.act");
-        util::reportFatalError("missing important resources");
-
-        return nullptr;
-    }
-
-    const auto model = act::Model::loadFromBinary(act_buffer.value());
-
-    if (!model.has_value()) {
-        LogError("failed to load act model");
-        return nullptr;
-    }
-
-    LogInfo("model has {} nodes", model->nodes.size());
-
-    // end test
 
     if (!glfwInit()) {
         GLFW_FATAL_ERROR("glfwInit");
@@ -218,7 +209,71 @@ auto ApplicationState::create(const Description &description) -> std::unique_ptr
     state->renderer_ = graphics::Renderer::create(renderer_desc);
     LogInfo("created renderer object");
 
+    if (util::Result::eSuccess != state->loadMeshes()) {
+        LogError("failed to load resources");
+        return nullptr;
+    }
+
     return state;
+}
+
+auto ApplicationState::loadMeshes() -> util::Result {
+    const auto act_buffer = main_archive_->reader().getFileContent("wakamo.act");
+    if (!act_buffer.has_value()) {
+        LogError("failed to read wakamo.act");
+        util::reportFatalError("missing important resources");
+
+        return util::Result::eFailure;
+    }
+
+    const auto model = act::Model::loadFromBinary(act_buffer.value());
+
+    if (!model.has_value()) {
+        LogError("failed to load act model");
+        return util::Result::eFailure;
+    }
+
+    LogInfo("model has {} nodes", model->nodes.size());
+
+    // get the first mesh and translate into a buffer for renderer
+    const auto &submesh_id = model->meshes[0].submesh_ids[0];
+    const auto &submesh = std::get<act::Model::RiggedSubmesh>(model->submeshes[submesh_id]);
+
+    std::vector<graphics::Renderer::StaticVertex> vertices{submesh.vertices.size()};
+    for (size_t i = 0; i < submesh.vertices.size(); ++i) {
+        vertices[i].position = submesh.vertices[i].position;
+        vertices[i].normal = submesh.vertices[i].normal;
+        vertices[i].tangent = submesh.vertices[i].tangent;
+        vertices[i].uv = submesh.vertices[i].texcoord;
+    }
+
+    test_mesh_ = renderer_->createMesh(vertices, submesh.indices);
+    if (!test_mesh_) {
+        LogError("failed to upload gpu mesh");
+        return util::Result::eFailure;
+    }
+
+    return util::Result::eSuccess;
+}
+
+auto ApplicationState::run() -> util::Result {
+    while (!glfwWindowShouldClose(window_handle_)) {
+        graphics::Renderer::OpaqueDrawDescription draw_desc = {
+            .mesh = test_mesh_.value(),
+            .world_matrix = glm::fmat4x4{1.0f},
+        };
+
+        renderer_->drawOpaqueMesh(std::move(draw_desc));
+
+        if (util::Result::eSuccess != renderer_->frame()) {
+            LogError("failed to render frame");
+            return util::Result::eFailure;
+        }
+
+        glfwPollEvents();
+    }
+
+    return util::Result::eSuccess;
 }
 
 ApplicationState::~ApplicationState() noexcept {

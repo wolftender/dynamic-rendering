@@ -43,6 +43,8 @@ struct VertexShaderOutput {
     float4 position : SV_Position;
     float3 normal;
     float2 uv;
+    float3 color;
+    float4 tangent;
 };
 
 [[vk::binding(0, 0)]]
@@ -54,7 +56,10 @@ VertexShaderOutput vsMain(VertexShaderInput input, uniform cbFrameHeapBuffer *fr
     float4x4 model_matrix = frame_heap.static_objects[object_id].world;
 
     output.position = mul(frame_heap.projection, mul(frame_heap.view, mul(model_matrix, float4(input.position, 1.0))));
+    output.normal = input.normal;
     output.uv = input.uv;
+    output.color = input.color;
+    output.tangent = input.tangent;
 
     return output;
 }

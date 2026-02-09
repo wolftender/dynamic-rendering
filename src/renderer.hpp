@@ -1,7 +1,110 @@
 #pragma once
+#include <array>
+#include <deque>
+
+#include <glm/gtc/constants.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+#include <glm/ext/matrix_clip_space.hpp>
+
 #include "vulkan.hpp"
 
+#undef near
+#undef far
+
 namespace graphics {
+
+class Camera final {
+public:
+    Camera()
+        : position_{0.0f, 0.0f, 1.0f}, target_{0.0f, 0.0f, 0.0f}, aspect_{1.0f}, fov_{glm::pi<float>() * 0.5f},
+          near_{0.5f}, far_{200.0f}, dirty_bit_proj_{true}, dirty_bit_view_{true}, projection_{1.0f},
+          projection_inv_{1.0f}, view_{1.0f}, view_inv_{1.0f} {}
+
+    auto position() const -> const glm::fvec3 & { return position_; }
+    auto target() const -> const glm::fvec3 & { return target_; }
+    auto aspect() const -> float { return aspect_; }
+    auto fov() const -> float { return fov_; }
+    auto near() const -> float { return near_; }
+    auto far() const -> float { return far_; }
+
+    auto setPosition(const glm::fvec3 &position) -> void {
+        position_ = position;
+        dirty_bit_view_ = true;
+    }
+
+    auto setTarget(const glm::fvec3 &target) -> void {
+        target_ = target;
+        dirty_bit_view_ = true;
+    }
+
+    auto setAspect(float aspect) -> void {
+        aspect_ = aspect;
+        dirty_bit_proj_ = true;
+    }
+
+    auto setFov(float fov) -> void {
+        fov_ = fov;
+        dirty_bit_proj_ = true;
+    }
+
+    auto setNear(float near) -> void {
+        near_ = near;
+        dirty_bit_proj_ = true;
+    }
+
+    auto setFar(float far) -> void {
+        far_ = far;
+        dirty_bit_proj_ = true;
+    }
+
+    auto projection() const -> const glm::fmat4x4 & {
+        calculateProjection();
+        return projection_;
+    }
+
+    auto view() const -> const glm::fmat4x4 & {
+        calculateView();
+        return view_;
+    }
+
+    auto projectionInv() const -> const glm::fmat4x4 & {
+        calculateProjection();
+        return projection_inv_;
+    }
+
+    auto viewInv() const -> const glm::fmat4x4 & {
+        calculateView();
+        return view_inv_;
+    }
+
+private:
+    inline auto calculateProjection() const -> void {
+        if (dirty_bit_proj_) {
+            projection_ = glm::perspective(fov_, aspect_, near_, far_);
+            projection_inv_ = glm::inverse(projection_);
+            dirty_bit_proj_ = false;
+        }
+    }
+
+    inline auto calculateView() const -> void {
+        if (dirty_bit_view_) {
+            view_ = glm::lookAt(position_, target_, glm::fvec3{0.0f, 1.0f, 0.0f});
+            view_inv_ = glm::inverse(view_);
+            dirty_bit_view_ = false;
+        }
+    }
+
+    glm::fvec3 position_;
+    glm::fvec3 target_;
+
+    float aspect_, fov_, near_, far_;
+
+    // cache
+    mutable bool dirty_bit_proj_;
+    mutable bool dirty_bit_view_;
+    mutable glm::fmat4x4 projection_, projection_inv_;
+    mutable glm::fmat4x4 view_, view_inv_;
+};
 
 class Renderer final {
 private:
@@ -9,6 +112,14 @@ private:
     struct MeshTag {};
 
 public:
+    static constexpr uint32_t kNumFramesInFlight = 2;
+    static constexpr uint32_t kNumMaxPointLights = 20;
+    static constexpr uint32_t kNumMaxStaticObjects = 1024;
+    static constexpr uint32_t kNumMaxSkinnedObjects = 128;
+    static constexpr uint32_t kNumMaxBonesPerObject = 200;
+    static constexpr uint32_t kNumTexturePoolSize = 256;
+    static constexpr uint32_t kNumMeshPoolSize = 512;
+
     class IShaderLoader {
     public:
         IShaderLoader() = default;
@@ -22,14 +133,6 @@ public:
         IShaderLoader(IShaderLoader &&) noexcept = delete;
         auto operator=(IShaderLoader &&) noexcept = delete;
     };
-
-    static constexpr uint32_t kNumFramesInFlight = 2;
-    static constexpr uint32_t kNumMaxPointLights = 20;
-    static constexpr uint32_t kNumMaxStaticObjects = 1024;
-    static constexpr uint32_t kNumMaxSkinnedObjects = 128;
-    static constexpr uint32_t kNumMaxBonesPerObject = 200;
-    static constexpr uint32_t kNumTexturePoolSize = 256;
-    static constexpr uint32_t kNumMeshPoolSize = 512;
 
     template <typename T> struct Identifier {
     private:
@@ -49,10 +152,16 @@ public:
         std::unique_ptr<IShaderLoader> shader_loader;
     };
 
+    struct OpaqueDrawDescription {
+        MeshId mesh;
+        glm::fmat4x4 world_matrix;
+    };
+
     struct StaticVertex {
         glm::fvec3 position;
         glm::fvec3 normal;
         glm::fvec2 uv;
+        glm::fvec3 color;
         glm::fvec4 tangent;
     };
 
@@ -106,7 +215,7 @@ public:
     private:
         static auto create(
             Renderer *renderer, std::span<const uint8_t> vertex_buffer, uint32_t num_vertices,
-            std::span<uint32_t> indices) -> std::unique_ptr<Mesh>;
+            std::span<const uint32_t> indices) -> std::unique_ptr<Mesh>;
 
         Mesh() = default;
 
@@ -170,27 +279,48 @@ public:
         friend class Renderer;
     };
 
-    template <VertexType V, util::TypedContiguousRange<V> VR, util::TypedContiguousRange<uint32_t> IR>
-    auto createMesh(const VR &vertex_input_range, const IR &index_input_range) -> MeshId {
+    static auto create(const Description &description) -> std::unique_ptr<Renderer>;
+
+    ~Renderer() noexcept;
+
+    Renderer(const Renderer &) = delete;
+    auto operator=(const Renderer &) = delete;
+
+    Renderer(Renderer &&) noexcept = delete;
+    auto operator=(Renderer &&) noexcept = delete;
+
+    auto camera() -> Camera & { return camera_; }
+    auto camera() const -> const Camera & { return camera_; }
+
+    template <util::TypedContiguousRange<StaticVertex> VR, util::TypedContiguousRange<const uint32_t> IR>
+    auto createMesh(const VR &vertex_input_range, const IR &index_input_range) -> std::optional<MeshId> {
         const auto vertex_buffer_ptr = reinterpret_cast<const uint8_t *>(std::ranges::data(vertex_input_range));
-        const auto vertex_buffer_size = std::ranges::size(vertex_input_range) * sizeof(V);
+        const auto vertex_buffer_size = std::ranges::size(vertex_input_range) * sizeof(StaticVertex);
 
         auto mesh = Mesh::create(
             this, {vertex_buffer_ptr, vertex_buffer_size}, std::ranges::size(vertex_input_range), index_input_range);
 
         auto id = mesh_pool_.insert(std::move(mesh));
-        return MeshId{id};
+        if (!id.has_value()) {
+            return std::nullopt;
+        }
+
+        return MeshId{id.value()};
     }
 
     template <util::TypedContiguousRange<const uint8_t> R>
-    auto createRgbaTexture(const Texture::Description &desc, const R &rgba_data) -> TextureId {
+    auto createRgbaTexture(const Texture::Description &desc, const R &rgba_data) -> std::optional<TextureId> {
         const auto rgba_buffer_ptr = std::ranges::data(rgba_data);
         const auto rgba_buffer_size = std::ranges::size(rgba_data);
 
         auto texture = Texture::fromRgba(this, desc, {rgba_buffer_ptr, rgba_buffer_size});
         auto id = texture_pool_.insert(std::move(texture));
 
-        return TextureId{id};
+        if (!id.has_value()) {
+            return std::nullopt;
+        }
+
+        return TextureId{id.value()};
     }
 
     template <std::invocable<const Texture &> F> auto withTexture(TextureId handle, F consumer) const {
@@ -214,15 +344,16 @@ public:
     auto deleteMesh(MeshId handle) { mesh_pool_.erase(handle.id()); }
     auto deleteTexture(TextureId handle) { texture_pool_.erase(handle.id()); }
 
-    static auto create(const Description &description) -> std::unique_ptr<Renderer>;
+    auto frame() -> util::Result;
 
-    ~Renderer() noexcept;
+    auto drawOpaqueMesh(OpaqueDrawDescription &&desc) -> util::Result {
+        if (draw_queue_fill_ == draw_queue_.size()) {
+            return util::Result::eFailure;
+        }
 
-    Renderer(const Renderer &) = delete;
-    auto operator=(const Renderer &) = delete;
-
-    Renderer(Renderer &&) noexcept = delete;
-    auto operator=(Renderer &&) noexcept = delete;
+        draw_queue_[draw_queue_fill_++] = std::move(desc);
+        return util::Result::eSuccess;
+    }
 
 private:
     class TexturePool final {
@@ -299,8 +430,9 @@ private:
         DescriptorSetHelper(DescriptorSetHelper &&) noexcept = delete;
         auto operator=(DescriptorSetHelper &&) noexcept = delete;
 
-        auto getPool() const -> VkDescriptorPool { return pool_; }
-        auto getDescription() const -> const Description & { return desc_; }
+        auto pool() const -> VkDescriptorPool { return pool_; }
+        auto description() const -> const Description & { return desc_; }
+        auto layout() const -> VkDescriptorSetLayout { return layout_; }
         auto getSetForFrame(uint32_t frame) const -> VkDescriptorSet { return sets_[frame]; }
 
     private:
@@ -315,12 +447,37 @@ private:
         std::array<VkDescriptorSet, kNumFramesInFlight> sets_;
     };
 
-    Renderer() = default;
+    class OpaqueGeometryPass final {
+    public:
+        struct cbPushConstantBuffer {
+            VkDeviceAddress frame_heap;
+            uint32_t object_id;
+        };
 
-    Context *context_ = nullptr;
+        static auto create(Renderer *renderer, const IShaderLoader *shader_loader)
+            -> std::unique_ptr<OpaqueGeometryPass>;
 
-    Image depth_buffer_;
-    Image::View depth_buffer_view_;
+        ~OpaqueGeometryPass() noexcept;
+
+        OpaqueGeometryPass(const OpaqueGeometryPass &) = delete;
+        auto operator=(const OpaqueGeometryPass &) = delete;
+
+        OpaqueGeometryPass(OpaqueGeometryPass &&) noexcept = delete;
+        auto operator=(OpaqueGeometryPass &&) noexcept = delete;
+
+        auto shaderModule() const -> VkShaderModule { return shader_module_; }
+        auto pipelineLayout() const -> VkPipelineLayout { return pipeline_layout_; }
+        auto pipeline() const -> VkPipeline { return pipeline_; }
+
+    private:
+        OpaqueGeometryPass() = default;
+
+        Renderer *renderer_ = nullptr;
+
+        VkShaderModule shader_module_ = VK_NULL_HANDLE;
+        VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
+        VkPipeline pipeline_ = VK_NULL_HANDLE;
+    };
 
     template <typename cbBufferDataType> class SceneBufferHelper;
 
@@ -331,6 +488,16 @@ private:
         VkFence fence = VK_NULL_HANDLE;
         VkSemaphore present_semaphore = VK_NULL_HANDLE;
     };
+
+    auto getCurrentFrame() -> FrameData & { return frames_[current_frame_]; }
+
+    Renderer() = default;
+
+    Context *context_ = nullptr;
+    Camera camera_;
+
+    Image depth_buffer_;
+    Image::View depth_buffer_view_;
 
     struct SwapchainImageData {
         VkSemaphore render_semaphore = VK_NULL_HANDLE;
@@ -344,10 +511,14 @@ private:
     TexturePool texture_pool_;
     MeshPool mesh_pool_;
 
-    std::unique_ptr<DescriptorSetHelper> geometry_pass_descriptors_;
-    VkShaderModule geometry_pass_shader_ = VK_NULL_HANDLE;
+    // render passes
+    std::unique_ptr<DescriptorSetHelper> descriptor_helper_ = nullptr;
+    std::unique_ptr<OpaqueGeometryPass> geometry_pass_ = nullptr;
 
-    uint32_t current_frame_;
+    // draw queue
+    std::array<std::optional<OpaqueDrawDescription>, kNumMaxStaticObjects> draw_queue_;
+    uint32_t draw_queue_fill_ = 0;
+    uint32_t current_frame_ = 0;
 };
 
 } // namespace graphics

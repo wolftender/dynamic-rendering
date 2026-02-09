@@ -1174,6 +1174,9 @@ auto Context::createSwapchain() -> void {
         .oldSwapchain = swapchain_,
     };
 
+    swapchain_format_ = selected_format;
+    present_mode_ = selected_present_mode;
+
     VK_CHECK_ERROR(vkCreateSwapchainKHR(device_, &swapchain_info, nullptr, &swapchain_));
     LogInfo("vulkan: swapchain created successfully");
 

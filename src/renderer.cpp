@@ -83,7 +83,7 @@ public:
         VkBufferCopy buffer_copy = {
             .srcOffset = 0,
             .dstOffset = 0,
-            .size = VK_WHOLE_SIZE,
+            .size = kDataSize,
         };
 
         vkCmdCopyBuffer(command_buffer, staging_buffer_.buffer(), device_buffer_.buffer(), 1, &buffer_copy);
@@ -123,16 +123,16 @@ private:
 };
 
 auto Renderer::Mesh::create(
-    Renderer *renderer, std::span<const uint8_t> vertex_buffer, uint32_t num_vertices, std::span<uint32_t> indices)
-    -> std::unique_ptr<Mesh> {
+    Renderer *renderer, std::span<const uint8_t> vertex_buffer, uint32_t num_vertices,
+    std::span<const uint32_t> indices) -> std::unique_ptr<Mesh> {
     std::unique_ptr<Mesh> mesh{new (std::nothrow) Mesh()};
     if (!mesh) {
         LogError("vulkan: failed to allocate mesh object");
         return nullptr;
     }
 
-    const auto &memory = mesh->renderer_->context_->memory();
     mesh->renderer_ = renderer;
+    const auto &memory = mesh->renderer_->context_->memory();
 
     mesh->num_vertices_ = num_vertices;
     mesh->num_indices_ = std::size(indices);
@@ -556,9 +556,31 @@ auto Renderer::create(const Description &description) -> std::unique_ptr<Rendere
             },
     };
 
-    renderer->geometry_pass_descriptors_ = DescriptorSetHelper::create(renderer.get(), per_frame_desc);
+    renderer->descriptor_helper_ = DescriptorSetHelper::create(renderer.get(), per_frame_desc);
 
-    const auto shader_buffer = description.shader_loader->loadGeometryPassShader();
+    renderer->geometry_pass_ = OpaqueGeometryPass::create(renderer.get(), description.shader_loader.get());
+    if (!renderer->geometry_pass_) {
+        LogError("vulkan: renderer cannot initialize graphics pipeline");
+        return nullptr;
+    }
+
+    return renderer;
+}
+
+auto Renderer::OpaqueGeometryPass::create(Renderer *renderer, const IShaderLoader *shader_loader)
+    -> std::unique_ptr<OpaqueGeometryPass> {
+    std::unique_ptr<OpaqueGeometryPass> pass{new (std::nothrow) OpaqueGeometryPass()};
+    if (!pass) {
+        LogError("vulkan: renderer cannot allocate opaque geometry pass resources");
+        return nullptr;
+    }
+
+    pass->renderer_ = renderer;
+
+    const auto context = pass->renderer_->context_;
+    const auto device = pass->renderer_->context_->device();
+
+    const auto shader_buffer = shader_loader->loadGeometryPassShader();
     if (!shader_buffer) {
         LogError("vulkan: renderer cannot load main shader");
         return nullptr;
@@ -570,19 +592,407 @@ auto Renderer::create(const Description &description) -> std::unique_ptr<Rendere
         .pCode = shader_buffer->data(),
     };
 
-    VK_CHECK_ERROR(vkCreateShaderModule(
-        renderer->context_->device(), &shader_module_info, nullptr, &renderer->geometry_pass_shader_));
+    VK_CHECK_ERROR(vkCreateShaderModule(device, &shader_module_info, nullptr, &pass->shader_module_));
 
-    return renderer;
+    // graphics pipeline
+    VkPushConstantRange push_constant_range = {
+        .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+        .size = sizeof(cbPushConstantBuffer),
+    };
+
+    VkDescriptorSetLayout descriptor_layout = pass->renderer_->descriptor_helper_->layout();
+
+    VkPipelineLayoutCreateInfo pipeline_layout_desc = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        .setLayoutCount = 1,
+        .pSetLayouts = &descriptor_layout,
+        .pushConstantRangeCount = 1,
+        .pPushConstantRanges = &push_constant_range,
+    };
+
+    VK_CHECK_ERROR(vkCreatePipelineLayout(device, &pipeline_layout_desc, nullptr, &pass->pipeline_layout_));
+
+    VkVertexInputBindingDescription vertex_binding = {
+        .binding = 0,
+        .stride = sizeof(StaticVertex),
+        .inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
+    };
+
+    std::array<VkVertexInputAttributeDescription, 5> vertex_attribs = {
+        VkVertexInputAttributeDescription{
+            .location = 0,
+            .binding = 0,
+            .format = VK_FORMAT_R32G32B32_SFLOAT,
+            .offset = offsetof(StaticVertex, position)},
+        VkVertexInputAttributeDescription{
+            .location = 1,
+            .binding = 0,
+            .format = VK_FORMAT_R32G32B32_SFLOAT,
+            .offset = offsetof(StaticVertex, normal)},
+        VkVertexInputAttributeDescription{
+            .location = 2, .binding = 0, .format = VK_FORMAT_R32G32_SFLOAT, .offset = offsetof(StaticVertex, uv)},
+        VkVertexInputAttributeDescription{
+            .location = 3, .binding = 0, .format = VK_FORMAT_R32G32B32_SFLOAT, .offset = offsetof(StaticVertex, color)},
+        VkVertexInputAttributeDescription{
+            .location = 4,
+            .binding = 0,
+            .format = VK_FORMAT_R32G32B32A32_SFLOAT,
+            .offset = offsetof(StaticVertex, tangent)},
+    };
+
+    VkPipelineVertexInputStateCreateInfo vertex_input_desc = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+        .vertexBindingDescriptionCount = 1,
+        .pVertexBindingDescriptions = &vertex_binding,
+        .vertexAttributeDescriptionCount = static_cast<uint32_t>(vertex_attribs.size()),
+        .pVertexAttributeDescriptions = vertex_attribs.data(),
+    };
+
+    VkPipelineInputAssemblyStateCreateInfo input_assembly_desc = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+        .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+    };
+
+    std::array<VkPipelineShaderStageCreateInfo, 2> shader_stage_desc = {
+        VkPipelineShaderStageCreateInfo{
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+            .stage = VK_SHADER_STAGE_VERTEX_BIT,
+            .module = pass->shader_module_,
+            .pName = "vsMain",
+        },
+        VkPipelineShaderStageCreateInfo{
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+            .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+            .module = pass->shader_module_,
+            .pName = "fsMain",
+        },
+    };
+
+    VkPipelineViewportStateCreateInfo viewport_desc = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+        .viewportCount = 1,
+        .scissorCount = 1,
+    };
+
+    std::array<VkDynamicState, 2> dynamic_states = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dynamic_state_desc = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+        .dynamicStateCount = static_cast<uint32_t>(dynamic_states.size()),
+        .pDynamicStates = dynamic_states.data(),
+    };
+
+    VkPipelineDepthStencilStateCreateInfo depth_stencil_desc = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+        .depthTestEnable = VK_TRUE,
+        .depthWriteEnable = VK_TRUE,
+        .depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL,
+    };
+
+    const auto swapchain_format = context->swapchainFormat().format;
+    VkPipelineRenderingCreateInfo rendering_desc = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+        .colorAttachmentCount = 1,
+        .pColorAttachmentFormats = &swapchain_format,
+        .depthAttachmentFormat = context->supportedDepthFormat(),
+    };
+
+    VkPipelineColorBlendAttachmentState blend_attachment_desc = {
+        .colorWriteMask = 0xf,
+    };
+
+    VkPipelineColorBlendStateCreateInfo color_blend_desc = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+        .attachmentCount = 1,
+        .pAttachments = &blend_attachment_desc,
+    };
+
+    VkPipelineRasterizationStateCreateInfo rasterization_desc = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+        .lineWidth = 1.0f,
+    };
+
+    VkPipelineMultisampleStateCreateInfo multisample_desc = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+        .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+    };
+
+    VkGraphicsPipelineCreateInfo pipeline_desc = {
+        .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+        .pNext = &rendering_desc,
+        .stageCount = static_cast<uint32_t>(shader_stage_desc.size()),
+        .pStages = shader_stage_desc.data(),
+        .pVertexInputState = &vertex_input_desc,
+        .pInputAssemblyState = &input_assembly_desc,
+        .pViewportState = &viewport_desc,
+        .pRasterizationState = &rasterization_desc,
+        .pMultisampleState = &multisample_desc,
+        .pDepthStencilState = &depth_stencil_desc,
+        .pColorBlendState = &color_blend_desc,
+        .pDynamicState = &dynamic_state_desc,
+        .layout = pass->pipeline_layout_,
+    };
+
+    VK_CHECK_ERROR(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipeline_desc, nullptr, &pass->pipeline_));
+    return pass;
+}
+
+Renderer::OpaqueGeometryPass::~OpaqueGeometryPass() noexcept {
+    if (VK_NULL_HANDLE != pipeline_) {
+        vkDestroyPipeline(renderer_->context_->device(), pipeline_, nullptr);
+        pipeline_ = VK_NULL_HANDLE;
+    }
+
+    if (VK_NULL_HANDLE != pipeline_layout_) {
+        vkDestroyPipelineLayout(renderer_->context_->device(), pipeline_layout_, nullptr);
+        pipeline_layout_ = VK_NULL_HANDLE;
+    }
+
+    if (VK_NULL_HANDLE != shader_module_) {
+        vkDestroyShaderModule(renderer_->context_->device(), shader_module_, nullptr);
+        shader_module_ = VK_NULL_HANDLE;
+    }
+}
+
+auto Renderer::frame() -> util::Result {
+    bool rebuild_swapchain = false;
+    auto &current_frame = getCurrentFrame();
+
+    camera_.setAspect(
+        static_cast<float>(context_->framebufferExtent().width) /
+        static_cast<float>(context_->framebufferExtent().height));
+
+    VK_CHECK_ERROR(vkWaitForFences(context_->device(), 1, &current_frame.fence, VK_TRUE, UINT64_MAX));
+    VK_CHECK_ERROR(vkResetFences(context_->device(), 1, &current_frame.fence));
+
+    uint32_t image_index = 0;
+    {
+        VkResult res = vkAcquireNextImageKHR(
+            context_->device(), context_->swapchain(), UINT64_MAX, current_frame.present_semaphore, VK_NULL_HANDLE,
+            &image_index);
+
+        switch (res) {
+        case VK_SUCCESS:
+        case VK_SUBOPTIMAL_KHR:
+            break;
+        case VK_ERROR_OUT_OF_DATE_KHR:
+            rebuild_swapchain = true;
+            break;
+        default:
+            LogError("cannot acquire next swapchain image: {}", string_VkResult(res));
+            return util::Result::eFailure;
+        }
+    }
+
+    // update frame data
+    auto &scene_buffer = current_frame.scene_buffer;
+    auto &scene_buffer_data = scene_buffer->storage();
+
+    scene_buffer_data.projection = camera_.projection();
+    scene_buffer_data.projection_inv = camera_.projectionInv();
+    scene_buffer_data.view = camera_.view();
+    scene_buffer_data.view_inv = camera_.viewInv();
+
+    for (uint32_t i = 0; i < draw_queue_fill_; ++i) {
+        scene_buffer_data.static_objects[i].world = draw_queue_[i]->world_matrix;
+    }
+
+    auto command_buffer = current_frame.command_buffer;
+    VK_CHECK_ERROR(vkResetCommandBuffer(command_buffer, 0));
+
+    VkCommandBufferBeginInfo command_buffer_begin_desc = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+    };
+
+    VK_CHECK_ERROR(vkBeginCommandBuffer(command_buffer, &command_buffer_begin_desc));
+
+    // upload buffer data - this also inserts a memory barrier!!
+    scene_buffer->upload(command_buffer);
+
+    std::array<VkImageMemoryBarrier2, 2> output_barriers = {
+        VkImageMemoryBarrier2{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            .srcAccessMask = 0,
+            .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            .newLayout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
+            .image = context_->swapchainImages()[image_index],
+            .subresourceRange = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .levelCount = 1, .layerCount = 1},
+        },
+        VkImageMemoryBarrier2{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .srcStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+            .srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+            .dstStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+            .dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            .newLayout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
+            .image = depth_buffer_.image(),
+            .subresourceRange =
+                {
+                    .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
+                    .levelCount = 1,
+                    .layerCount = 1,
+                },
+        },
+    };
+
+    VkDependencyInfo output_dependency_desc = {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .imageMemoryBarrierCount = static_cast<uint32_t>(output_barriers.size()),
+        .pImageMemoryBarriers = output_barriers.data(),
+    };
+
+    vkCmdPipelineBarrier2(command_buffer, &output_dependency_desc);
+
+    VkRenderingAttachmentInfo color_attachment_desc = {
+        .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+        .imageView = context_->swapchainImageViews()[image_index],
+        .imageLayout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
+        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+        .clearValue = {.color = {{0.207f, 0.36f, 0.64f, 1.0f}}},
+    };
+
+    VkRenderingAttachmentInfo depth_attachment_desc = {
+        .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+        .imageView = depth_buffer_view_.view(),
+        .imageLayout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
+        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        .clearValue = {.depthStencil = {1.0f, 0}},
+    };
+
+    VkRenderingInfo rendering_info = {
+        .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+        .renderArea =
+            {
+                .extent = context_->framebufferExtent(),
+            },
+        .layerCount = 1,
+        .colorAttachmentCount = 1,
+        .pColorAttachments = &color_attachment_desc,
+        .pDepthAttachment = &depth_attachment_desc,
+    };
+
+    vkCmdBeginRendering(command_buffer, &rendering_info);
+    VkViewport vp = {
+        .width = static_cast<float>(context_->surfaceExtent().width),
+        .height = static_cast<float>(context_->surfaceExtent().height),
+        .minDepth = 0.0f,
+        .maxDepth = 1.0f,
+    };
+
+    VkRect2D scissor = {.extent = context_->surfaceExtent()};
+
+    vkCmdSetViewport(command_buffer, 0, 1, &vp);
+    vkCmdSetScissor(command_buffer, 0, 1, &scissor);
+    vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, geometry_pass_->pipeline());
+
+    VkDescriptorSet ds = descriptor_helper_->getSetForFrame(current_frame_);
+    vkCmdBindDescriptorSets(
+        command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, geometry_pass_->pipelineLayout(), 0, 1, &ds, 0, nullptr);
+
+    VkDeviceSize vertex_offset = 0;
+    OpaqueGeometryPass::cbPushConstantBuffer push_constants;
+
+    for (uint32_t i = 0; i < draw_queue_fill_; ++i) {
+        const auto &draw_call = draw_queue_[i].value();
+        withMesh(draw_call.mesh, [&](const Mesh &mesh) {
+            vkCmdBindVertexBuffers(command_buffer, 0, 1, mesh.vertexBuffer().addrOf(), &vertex_offset);
+            vkCmdBindIndexBuffer(command_buffer, mesh.indexBuffer().buffer(), 0, VK_INDEX_TYPE_UINT32);
+
+            push_constants.frame_heap = scene_buffer->deviceAddress();
+            push_constants.object_id = i;
+
+            vkCmdPushConstants(
+                command_buffer, geometry_pass_->pipelineLayout(),
+                VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                sizeof(OpaqueGeometryPass::cbPushConstantBuffer), &push_constants);
+
+            vkCmdDrawIndexed(command_buffer, mesh.numIndices(), 1, 0, 0, 0);
+        });
+    }
+
+    vkCmdEndRendering(command_buffer);
+
+    VkImageMemoryBarrier2 barrier_present = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .dstAccessMask = 0,
+        .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+        .image = context_->swapchainImages()[image_index],
+        .subresourceRange = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .levelCount = 1, .layerCount = 1},
+    };
+
+    VkDependencyInfo dependency_present = {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .imageMemoryBarrierCount = 1,
+        .pImageMemoryBarriers = &barrier_present,
+    };
+
+    vkCmdPipelineBarrier2(command_buffer, &dependency_present);
+    vkEndCommandBuffer(command_buffer);
+
+    draw_queue_fill_ = 0;
+
+    VkPipelineStageFlags wait_stages = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    VkSubmitInfo submit_info = {
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .waitSemaphoreCount = 1,
+        .pWaitSemaphores = &current_frame.present_semaphore,
+        .pWaitDstStageMask = &wait_stages,
+        .commandBufferCount = 1,
+        .pCommandBuffers = &command_buffer,
+        .signalSemaphoreCount = 1,
+        .pSignalSemaphores = &swapchain_data_[image_index].render_semaphore,
+    };
+
+    VK_CHECK_ERROR(vkQueueSubmit(context_->graphicsQueue(), 1, &submit_info, current_frame.fence));
+    current_frame_ = (current_frame_ + 1) % kNumFramesInFlight;
+
+    VkSwapchainKHR swapchain = context_->swapchain();
+    VkPresentInfoKHR present_info = {
+        .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .waitSemaphoreCount = 1,
+        .pWaitSemaphores = &swapchain_data_[image_index].render_semaphore,
+        .swapchainCount = 1,
+        .pSwapchains = &swapchain,
+        .pImageIndices = &image_index,
+    };
+
+    {
+        VkResult res = vkQueuePresentKHR(context_->presentQueue(), &present_info);
+
+        switch (res) {
+        case VK_SUCCESS:
+        case VK_SUBOPTIMAL_KHR:
+            break;
+        case VK_ERROR_OUT_OF_DATE_KHR:
+            rebuild_swapchain = true;
+            break;
+        default:
+            LogError("cannot present swapchain image: {}", string_VkResult(res));
+            return util::Result::eFailure;
+        }
+    }
+
+    if (rebuild_swapchain) {
+        // TODO: rebuild swapchain here
+        return util::Result::eFailure;
+    }
+
+    return util::Result::eSuccess;
 }
 
 Renderer::~Renderer() noexcept {
     LogInfo("vulkan: releasing renderer resources");
-
-    if (VK_NULL_HANDLE != geometry_pass_shader_) {
-        vkDestroyShaderModule(context_->device(), geometry_pass_shader_, nullptr);
-        geometry_pass_shader_ = VK_NULL_HANDLE;
-    }
+    VK_CHECK_ERROR(vkDeviceWaitIdle(context_->device()));
 
     if (VK_NULL_HANDLE != command_pool_) {
         vkDestroyCommandPool(context_->device(), command_pool_, nullptr);
