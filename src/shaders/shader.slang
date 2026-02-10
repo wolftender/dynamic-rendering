@@ -1,5 +1,5 @@
 const static uint32_t kNumMaxPointLights = 20;
-const static uint32_t kNumMaxStaticObjects = 2048;
+const static uint32_t kNumMaxStaticObjects = 1024;
 const static uint32_t kNumMaxSkinnedObjects = 128;
 const static uint32_t kNumMaxBonesPerObject = 200;
 const static uint32_t kNumTexturePoolSize = 256;
@@ -65,4 +65,4 @@ VertexShaderOutput vsMain(VertexShaderInput input, uniform cbFrameHeapBuffer *fr
 }
 
 [shader("fragment")]
-float4 fsMain(VertexShaderOutput input) { return float4(1.0, 0.0, 0.0, 1.0); }
+float4 fsMain(VertexShaderOutput input) { return float4(input.normal, 1.0); }

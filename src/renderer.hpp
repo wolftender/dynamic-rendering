@@ -163,6 +163,26 @@ public:
         glm::fvec2 uv;
         glm::fvec3 color;
         glm::fvec4 tangent;
+
+        StaticVertex() = default;
+
+        StaticVertex(
+            const glm::fvec3 &pos, const glm::fvec3 &norm, const glm::fvec2 &uv_coords, const glm::fvec3 &col,
+            const glm::fvec4 &tan)
+            : position{pos}, normal{norm}, uv{uv_coords}, color{col}, tangent{tan} {}
+
+        StaticVertex(const glm::fvec3 &pos, const glm::fvec3 &norm, const glm::fvec2 &uv_coords, const glm::fvec4 &tan)
+            : position{pos}, normal{norm}, uv{uv_coords}, color{1.0f, 1.0f, 1.0f}, tangent{tan} {}
+
+        StaticVertex(
+            float x, float y, float z, float nx, float ny, float nz, float u, float v, float tx, float ty, float tz,
+            float tw)
+            : position{x, y, z}, normal{nx, ny, nz}, uv{u, v}, color{1.0f, 1.0f, 1.0f}, tangent{tx, ty, tz, tw} {}
+
+        StaticVertex(
+            float x, float y, float z, float nx, float ny, float nz, float u, float v, float r, float g, float b,
+            float tx, float ty, float tz, float tw)
+            : position{x, y, z}, normal{nx, ny, nz}, uv{u, v}, color{r, g, b}, tangent{tx, ty, tz, tw} {}
     };
 
     enum PerFrameDescriptors : uint32_t {

@@ -878,9 +878,13 @@ auto Renderer::frame() -> util::Result {
     };
 
     vkCmdBeginRendering(command_buffer, &rendering_info);
+
+    // VK_HR_maintenance1, core from Vulkan 1.1, we can flip y to be "opengl-friendly"
     VkViewport vp = {
+        .x = 0.0f,
+        .y = static_cast<float>(context_->surfaceExtent().height),
         .width = static_cast<float>(context_->surfaceExtent().width),
-        .height = static_cast<float>(context_->surfaceExtent().height),
+        .height = -static_cast<float>(context_->surfaceExtent().height),
         .minDepth = 0.0f,
         .maxDepth = 1.0f,
     };

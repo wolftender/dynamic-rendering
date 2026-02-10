@@ -9,7 +9,8 @@
 #include <vulkan/vk_enum_string_helper.h>
 #include <vk_mem_alloc.h>
 
-#include "util.hpp"
+// this header is needed for VK_CHECK_ERROR macro to work properly
+#include "util.hpp" // IWYU pragma: keep
 
 namespace graphics {
 

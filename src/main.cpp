@@ -1,4 +1,6 @@
 #include <vector>
+#include <chrono>
+#include <cmath>
 
 #include <vulkan/vulkan.h>
 #include <GLFW/glfw3.h>
@@ -69,6 +71,7 @@ private:
     };
 
     auto loadMeshes() -> util::Result;
+    auto loadCubeMesh() -> util::Result;
 
     ApplicationState() = default;
 
@@ -209,7 +212,7 @@ auto ApplicationState::create(const Description &description) -> std::unique_ptr
     state->renderer_ = graphics::Renderer::create(renderer_desc);
     LogInfo("created renderer object");
 
-    if (util::Result::eSuccess != state->loadMeshes()) {
+    if (util::Result::eSuccess != state->loadCubeMesh()) {
         LogError("failed to load resources");
         return nullptr;
     }
@@ -236,7 +239,7 @@ auto ApplicationState::loadMeshes() -> util::Result {
     LogInfo("model has {} nodes", model->nodes.size());
 
     // get the first mesh and translate into a buffer for renderer
-    const auto &submesh_id = model->meshes[0].submesh_ids[0];
+    const auto &submesh_id = model->meshes[1].submesh_ids[0];
     const auto &submesh = std::get<act::Model::RiggedSubmesh>(model->submeshes[submesh_id]);
 
     std::vector<graphics::Renderer::StaticVertex> vertices{submesh.vertices.size()};
@@ -256,14 +259,86 @@ auto ApplicationState::loadMeshes() -> util::Result {
     return util::Result::eSuccess;
 }
 
-auto ApplicationState::run() -> util::Result {
-    while (!glfwWindowShouldClose(window_handle_)) {
-        graphics::Renderer::OpaqueDrawDescription draw_desc = {
-            .mesh = test_mesh_.value(),
-            .world_matrix = glm::fmat4x4{1.0f},
-        };
+auto ApplicationState::loadCubeMesh() -> util::Result {
+    using V = graphics::Renderer::StaticVertex;
+    const std::array<V, 24> kCubeVertices = {
+        V{1.0f, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, -1.0f, 0.0f, 0.0f, 1.0f},
+        V{-1.0f, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 0.0f, -1.0f, 0.0f, 0.0f, 1.0f},
+        V{-1.0f, -1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, -1.0f, 0.0f, 0.0f, 1.0f},
+        V{1.0f, -1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 1.0f, -1.0f, 0.0f, 0.0f, 1.0f},
+        V{1.0f, -1.0f, -1.0f, 0.0f, -1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f},
+        V{1.0f, -1.0f, 1.0f, 0.0f, -1.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f},
+        V{-1.0f, -1.0f, 1.0f, 0.0f, -1.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f},
+        V{-1.0f, -1.0f, -1.0f, 0.0f, -1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f},
+        V{-1.0f, -1.0f, -1.0f, -1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f},
+        V{-1.0f, -1.0f, 1.0f, -1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f},
+        V{-1.0f, 1.0f, 1.0f, -1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f},
+        V{-1.0f, 1.0f, -1.0f, -1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f},
+        V{-1.0f, 1.0f, -1.0f, 0.0f, 0.0f, -1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f},
+        V{1.0f, 1.0f, -1.0f, 0.0f, 0.0f, -1.0f, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f},
+        V{1.0f, -1.0f, -1.0f, 0.0f, 0.0f, -1.0f, 1.0f, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f},
+        V{-1.0f, -1.0f, -1.0f, 0.0f, 0.0f, -1.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f},
+        V{1.0f, 1.0f, -1.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f},
+        V{1.0f, 1.0f, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f},
+        V{1.0f, -1.0f, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f},
+        V{1.0f, -1.0f, -1.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f},
+        V{-1.0f, 1.0f, -1.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f},
+        V{-1.0f, 1.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f},
+        V{1.0f, 1.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f},
+        V{1.0f, 1.0f, -1.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f},
+    };
 
-        renderer_->drawOpaqueMesh(std::move(draw_desc));
+    constexpr std::array<uint32_t, 48> kCubeIndices = {
+        0,  1,  2,  0,  2,  3,  4,  5,  6,  4,  6,  7,  8,  9,  10, 8,  10, 11,
+        12, 13, 14, 12, 14, 15, 16, 17, 18, 16, 18, 19, 20, 21, 22, 20, 22, 23,
+    };
+
+    test_mesh_ = renderer_->createMesh(kCubeVertices, kCubeIndices);
+    if (!test_mesh_) {
+        LogError("failed to upload gpu mesh");
+        return util::Result::eFailure;
+    }
+
+    return util::Result::eSuccess;
+}
+
+auto ApplicationState::run() -> util::Result {
+    using Clock = std::chrono::high_resolution_clock;
+    constexpr float kMicrosecondsToSeconds = 1e-6;
+    constexpr float kCameraRadius = 3.75f;
+
+    auto last_frame = Clock::now();
+    float simulation_time = 0.0f;
+
+    const std::array<glm::fvec3, 7> kCubePositions = {
+        glm::fvec3{2.0f, 0.0f, 0.0f}, glm::fvec3{0.0f, 2.0f, 0.0f}, glm::fvec3{0.0f, 0.0f, 2.0f},
+        glm::fvec3{2.0f, 2.0f, 0.0f}, glm::fvec3{2.0f, 0.0f, 2.0f}, glm::fvec3{0.0f, 2.0f, 2.0f},
+        glm::fvec3{2.0f, 2.0f, 2.0f},
+    };
+
+    while (!glfwWindowShouldClose(window_handle_)) {
+        const auto now = Clock::now();
+        const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(now - last_frame).count();
+
+        const auto delta_time = static_cast<float>(elapsed) * kMicrosecondsToSeconds;
+        last_frame = now;
+        simulation_time = simulation_time + delta_time;
+
+        const glm::fvec3 camera_position = {
+            kCameraRadius * ::cosf(simulation_time), kCameraRadius, kCameraRadius * ::sinf(simulation_time)};
+
+        renderer_->camera().setPosition(camera_position);
+
+        for (const auto &position : kCubePositions) {
+            graphics::Renderer::OpaqueDrawDescription draw_desc = {
+                .mesh = test_mesh_.value(),
+                .world_matrix = glm::fmat4x4{1.0f},
+            };
+
+            draw_desc.world_matrix =
+                glm::scale(glm::translate(draw_desc.world_matrix, position), glm::fvec3{0.5f, 0.5f, 0.5f});
+            renderer_->drawOpaqueMesh(std::move(draw_desc));
+        }
 
         if (util::Result::eSuccess != renderer_->frame()) {
             LogError("failed to render frame");
