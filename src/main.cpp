@@ -59,6 +59,25 @@ public:
     auto run() -> util::Result;
 
 private:
+    // callbacks
+    static auto s_keyCallback(GLFWwindow *window, int key, int scancode, int action, int mods) -> void;
+    static auto s_textInputCallback(GLFWwindow *window, unsigned int codepoint) -> void;
+    static auto s_cursorPositionCallback(GLFWwindow *window, double x, double y) -> void;
+    static auto s_cursorEnteredCallback(GLFWwindow *window, int entered) -> void;
+    static auto s_mouseButtonCallback(GLFWwindow *window, int button, int action, int mods) -> void;
+    static auto s_mouseScrollCallback(GLFWwindow *window, double offset_x, double offset_y) -> void;
+    static auto s_windowSizeCallback(GLFWwindow *window, int width, int height) -> void;
+    static auto s_framebufferSizeCallback(GLFWwindow *window, int width, int height) -> void;
+
+    auto keyCallback(int key, int scancode, int action, int mods) -> void;
+    auto textInputCallback(unsigned int codepoint) -> void;
+    auto cursorPositionCallback(double x, double y) -> void;
+    auto cursorEnteredCallback(int entered) -> void;
+    auto mouseButtonCallback(int button, int action, int mods) -> void;
+    auto mouseScrollCallback(double offset_x, double offset_y) -> void;
+    auto windowSizeCallback(int width, int height) -> void;
+    auto framebufferSizeCallback(int width, int height) -> void;
+
     class ShaderLoaderImpl : public graphics::Renderer::IShaderLoader {
     public:
         ShaderLoaderImpl(const asset::ArchiveReader *archive);
@@ -174,6 +193,15 @@ auto ApplicationState::create(const Description &description) -> std::unique_ptr
 
     glfwSetWindowUserPointer(state->window_handle_, static_cast<void *>(state.get()));
 
+    // setup callbacks
+    glfwSetKeyCallback(state->window_handle_, ApplicationState::s_keyCallback);
+    glfwSetCharCallback(state->window_handle_, ApplicationState::s_textInputCallback);
+    glfwSetCursorPosCallback(state->window_handle_, ApplicationState::s_cursorPositionCallback);
+    glfwSetCursorEnterCallback(state->window_handle_, ApplicationState::s_cursorEnteredCallback);
+    glfwSetMouseButtonCallback(state->window_handle_, ApplicationState::s_mouseButtonCallback);
+    glfwSetWindowSizeCallback(state->window_handle_, ApplicationState::s_windowSizeCallback);
+    glfwSetFramebufferSizeCallback(state->window_handle_, ApplicationState::s_framebufferSizeCallback);
+
     graphics::Instance::Description graphics_instance_desc = {
         .instance_extensions = getInstanceExtensionList(),
     };
@@ -212,7 +240,7 @@ auto ApplicationState::create(const Description &description) -> std::unique_ptr
     state->renderer_ = graphics::Renderer::create(renderer_desc);
     LogInfo("created renderer object");
 
-    if (util::Result::eSuccess != state->loadCubeMesh()) {
+    if (util::Result::eSuccess != state->loadMeshes()) {
         LogError("failed to load resources");
         return nullptr;
     }
@@ -239,7 +267,7 @@ auto ApplicationState::loadMeshes() -> util::Result {
     LogInfo("model has {} nodes", model->nodes.size());
 
     // get the first mesh and translate into a buffer for renderer
-    const auto &submesh_id = model->meshes[1].submesh_ids[0];
+    const auto &submesh_id = model->meshes[0].submesh_ids[1];
     const auto &submesh = std::get<act::Model::RiggedSubmesh>(model->submeshes[submesh_id]);
 
     std::vector<graphics::Renderer::StaticVertex> vertices{submesh.vertices.size()};
@@ -336,7 +364,7 @@ auto ApplicationState::run() -> util::Result {
             };
 
             draw_desc.world_matrix =
-                glm::scale(glm::translate(draw_desc.world_matrix, position), glm::fvec3{0.5f, 0.5f, 0.5f});
+                glm::scale(glm::translate(draw_desc.world_matrix, position), glm::fvec3{200.0f, 200.0f, 200.0f});
             renderer_->drawOpaqueMesh(std::move(draw_desc));
         }
 
@@ -351,6 +379,37 @@ auto ApplicationState::run() -> util::Result {
     return util::Result::eSuccess;
 }
 
+auto ApplicationState::keyCallback(int, int, int, int) -> void {}
+auto ApplicationState::textInputCallback(unsigned int) -> void {}
+auto ApplicationState::cursorPositionCallback(double, double) -> void {}
+auto ApplicationState::cursorEnteredCallback(int) -> void {}
+auto ApplicationState::mouseButtonCallback(int, int, int) -> void {}
+auto ApplicationState::mouseScrollCallback(double, double) -> void {}
+
+auto ApplicationState::windowSizeCallback([[maybe_unused]] int width, [[maybe_unused]] int height) -> void {
+    int32_t window_width = 0, window_height = 0;
+    int32_t framebuffer_width = 0, framebuffer_height = 0;
+
+    glfwGetWindowSize(window_handle_, &window_width, &window_height);
+    glfwGetFramebufferSize(window_handle_, &framebuffer_width, &framebuffer_height);
+
+    renderer_->resize(
+        VkExtent2D{static_cast<uint32_t>(window_width), static_cast<uint32_t>(window_height)},
+        VkExtent2D{static_cast<uint32_t>(framebuffer_width), static_cast<uint32_t>(framebuffer_height)});
+}
+
+auto ApplicationState::framebufferSizeCallback([[maybe_unused]] int width, [[maybe_unused]] int height) -> void {
+    int32_t window_width = 0, window_height = 0;
+    int32_t framebuffer_width = 0, framebuffer_height = 0;
+
+    glfwGetWindowSize(window_handle_, &window_width, &window_height);
+    glfwGetFramebufferSize(window_handle_, &framebuffer_width, &framebuffer_height);
+
+    renderer_->resize(
+        VkExtent2D{static_cast<uint32_t>(window_width), static_cast<uint32_t>(window_height)},
+        VkExtent2D{static_cast<uint32_t>(framebuffer_width), static_cast<uint32_t>(framebuffer_height)});
+}
+
 ApplicationState::~ApplicationState() noexcept {
     if (window_handle_) {
         glfwDestroyWindow(window_handle_);
@@ -358,4 +417,84 @@ ApplicationState::~ApplicationState() noexcept {
     }
 
     glfwTerminate();
+}
+
+auto ApplicationState::s_keyCallback(GLFWwindow *window, int key, int scancode, int action, int mods) -> void {
+    auto ptr = glfwGetWindowUserPointer(window);
+    if (!ptr) {
+        LogError("invalid window callback s_keyCallback");
+        return;
+    }
+
+    reinterpret_cast<ApplicationState *>(ptr)->keyCallback(key, scancode, action, mods);
+}
+
+auto ApplicationState::s_textInputCallback(GLFWwindow *window, unsigned int codepoint) -> void {
+    auto ptr = glfwGetWindowUserPointer(window);
+    if (!ptr) {
+        LogError("invalid window callback s_textInputCallback");
+        return;
+    }
+
+    reinterpret_cast<ApplicationState *>(ptr)->textInputCallback(codepoint);
+}
+
+auto ApplicationState::s_cursorPositionCallback(GLFWwindow *window, double x, double y) -> void {
+    auto ptr = glfwGetWindowUserPointer(window);
+    if (!ptr) {
+        LogError("invalid window callback s_cursorPositionCallback");
+        return;
+    }
+
+    reinterpret_cast<ApplicationState *>(ptr)->cursorPositionCallback(x, y);
+}
+
+auto ApplicationState::s_cursorEnteredCallback(GLFWwindow *window, int entered) -> void {
+    auto ptr = glfwGetWindowUserPointer(window);
+    if (!ptr) {
+        LogError("invalid window callback s_cursorEnteredCallback");
+        return;
+    }
+
+    reinterpret_cast<ApplicationState *>(ptr)->cursorEnteredCallback(entered);
+}
+
+auto ApplicationState::s_mouseButtonCallback(GLFWwindow *window, int button, int action, int mods) -> void {
+    auto ptr = glfwGetWindowUserPointer(window);
+    if (!ptr) {
+        LogError("invalid window callback s_mouseButtonCallback");
+        return;
+    }
+
+    reinterpret_cast<ApplicationState *>(ptr)->mouseButtonCallback(button, action, mods);
+}
+
+auto ApplicationState::s_mouseScrollCallback(GLFWwindow *window, double offset_x, double offset_y) -> void {
+    auto ptr = glfwGetWindowUserPointer(window);
+    if (!ptr) {
+        LogError("invalid window callback s_mouseScrollCallback");
+        return;
+    }
+
+    reinterpret_cast<ApplicationState *>(ptr)->mouseScrollCallback(offset_x, offset_y);
+}
+
+auto ApplicationState::s_windowSizeCallback(GLFWwindow *window, int width, int height) -> void {
+    auto ptr = glfwGetWindowUserPointer(window);
+    if (!ptr) {
+        LogError("invalid window callback s_windowSizeCallback");
+        return;
+    }
+
+    reinterpret_cast<ApplicationState *>(ptr)->windowSizeCallback(width, height);
+}
+
+auto ApplicationState::s_framebufferSizeCallback(GLFWwindow *window, int width, int height) -> void {
+    auto ptr = glfwGetWindowUserPointer(window);
+    if (!ptr) {
+        LogError("invalid window callback s_framebufferSizeCallback");
+        return;
+    }
+
+    reinterpret_cast<ApplicationState *>(ptr)->framebufferSizeCallback(width, height);
 }

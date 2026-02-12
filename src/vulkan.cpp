@@ -1075,6 +1075,22 @@ auto Context::MemoryHelper::createImageRgba(
     return image;
 }
 
+auto Context::resize(VkExtent2D surface_extent, VkExtent2D framebuffer_extent) -> void {
+    if (surface_extent.width == 0 || surface_extent.height == 0 || framebuffer_extent.width == 0 ||
+        framebuffer_extent.height == 0) {
+        return;
+    }
+
+    LogInfo(
+        "vulkan: resize context, surface_extent = {}x{}, fb_extent = {}x{}", surface_extent.width,
+        surface_extent.height, framebuffer_extent.width, framebuffer_extent.height);
+
+    surface_extent_ = surface_extent;
+    framebuffer_extent_ = framebuffer_extent;
+
+    rebuildSwapchain();
+}
+
 auto Context::createSwapchain() -> void {
     VkSurfaceCapabilitiesKHR capabilities = {};
     VK_CHECK_ERROR(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical_device_, surface_, &capabilities));
@@ -1216,6 +1232,17 @@ auto Context::createSwapchain() -> void {
         VK_CHECK_ERROR(vkCreateImageView(device_, &image_view_info, nullptr, &image_view));
         return image_view;
     });
+}
+
+auto Context::rebuildSwapchain() -> void {
+    VK_CHECK_ERROR(vkDeviceWaitIdle(device_));
+
+    if (VK_NULL_HANDLE != swapchain_) {
+        vkDestroySwapchainKHR(device_, swapchain_, nullptr);
+        swapchain_ = VK_NULL_HANDLE;
+    }
+
+    createSwapchain();
 }
 
 Context::~Context() noexcept {

@@ -105,6 +105,7 @@ auto reportFatalError(std::string_view error_message) -> void {
     }
 
     MessageBoxW(NULL, wstr_msg.data(), L"fatal error", MB_OK | MB_ICONERROR);
+    return;
 
 fatal_conversion_error:
     MessageBoxW(

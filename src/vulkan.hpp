@@ -217,6 +217,7 @@ private:
     Context() = default;
 
     auto createSwapchain() -> void;
+    auto rebuildSwapchain() -> void;
 
     VkInstance instance_ = VK_NULL_HANDLE;
     VkSurfaceKHR surface_ = VK_NULL_HANDLE;
@@ -244,11 +245,6 @@ private:
     std::vector<VkImageView> swapchain_image_views_;
 
     VkFormat supported_depth_format_ = {};
-
-    VkFence immediate_fence_ = VK_NULL_HANDLE;
-    VkCommandBuffer immediate_command_buffer_ = VK_NULL_HANDLE;
-    VkCommandPool immediate_command_pool_ = VK_NULL_HANDLE;
-
     friend class Instance;
 };
 

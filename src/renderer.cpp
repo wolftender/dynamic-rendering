@@ -471,24 +471,7 @@ auto Renderer::create(const Description &description) -> std::unique_ptr<Rendere
     }
 
     renderer->context_ = description.context;
-
-    const auto surface_extent = renderer->context_->surfaceExtent();
-    VkImageCreateInfo depth_buffer_info = {
-        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-        .imageType = VK_IMAGE_TYPE_2D,
-        .format = renderer->context_->supportedDepthFormat(),
-        .extent = {surface_extent.width, surface_extent.height, 1},
-        .mipLevels = 1,
-        .arrayLayers = 1,
-        .samples = VK_SAMPLE_COUNT_1_BIT,
-        .tiling = VK_IMAGE_TILING_OPTIMAL,
-        .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-    };
-
-    renderer->depth_buffer_ = renderer->context_->memory().createImage(depth_buffer_info);
-    renderer->depth_buffer_view_ = renderer->depth_buffer_.createView(
-        VK_IMAGE_VIEW_TYPE_2D, VK_FORMAT_D24_UNORM_S8_UINT, VK_IMAGE_ASPECT_DEPTH_BIT);
+    renderer->createSwapchainData();
 
     for (size_t i = 0; i < kNumFramesInFlight; ++i) {
         renderer->frames_[i].scene_buffer = SceneBufferHelper<cbFrameHeapBuffer>::create(renderer.get());
@@ -536,14 +519,6 @@ auto Renderer::create(const Description &description) -> std::unique_ptr<Rendere
             vkCreateSemaphore(renderer->context_->device(), &semaphore_desc, nullptr, &frame.present_semaphore));
     }
 
-    const auto num_swapchain_images = renderer->context_->swapchainImages().size();
-
-    renderer->swapchain_data_.resize(num_swapchain_images);
-    for (size_t i = 0; i < num_swapchain_images; ++i) {
-        VK_CHECK_ERROR(vkCreateSemaphore(
-            renderer->context_->device(), &semaphore_desc, nullptr, &renderer->swapchain_data_[i].render_semaphore));
-    }
-
     // descriptor sets
     const DescriptorSetHelper::Description per_frame_desc = {
         .layout =
@@ -565,6 +540,47 @@ auto Renderer::create(const Description &description) -> std::unique_ptr<Rendere
     }
 
     return renderer;
+}
+
+auto Renderer::createSwapchainData() -> void {
+    const auto surface_extent = context_->surfaceExtent();
+    VkImageCreateInfo depth_buffer_info = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .imageType = VK_IMAGE_TYPE_2D,
+        .format = context_->supportedDepthFormat(),
+        .extent = {surface_extent.width, surface_extent.height, 1},
+        .mipLevels = 1,
+        .arrayLayers = 1,
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .tiling = VK_IMAGE_TILING_OPTIMAL,
+        .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+    };
+
+    depth_buffer_ = context_->memory().createImage(depth_buffer_info);
+    depth_buffer_view_ =
+        depth_buffer_.createView(VK_IMAGE_VIEW_TYPE_2D, VK_FORMAT_D24_UNORM_S8_UINT, VK_IMAGE_ASPECT_DEPTH_BIT);
+
+    VkSemaphoreCreateInfo semaphore_desc = {
+        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+    };
+
+    const auto num_swapchain_images = context_->swapchainImages().size();
+
+    for (auto &image_data : swapchain_data_) {
+        if (VK_NULL_HANDLE != image_data.render_semaphore) {
+            vkDestroySemaphore(context_->device(), image_data.render_semaphore, nullptr);
+            image_data.render_semaphore = VK_NULL_HANDLE;
+        }
+    }
+
+    swapchain_data_.clear();
+    swapchain_data_.resize(num_swapchain_images);
+
+    for (size_t i = 0; i < num_swapchain_images; ++i) {
+        VK_CHECK_ERROR(
+            vkCreateSemaphore(context_->device(), &semaphore_desc, nullptr, &swapchain_data_[i].render_semaphore));
+    }
 }
 
 auto Renderer::OpaqueGeometryPass::create(Renderer *renderer, const IShaderLoader *shader_loader)
@@ -754,7 +770,20 @@ Renderer::OpaqueGeometryPass::~OpaqueGeometryPass() noexcept {
 }
 
 auto Renderer::frame() -> util::Result {
-    bool rebuild_swapchain = false;
+    if (swapchain_needs_update_) {
+        if (!pending_resize_.has_value()) {
+            return util::Result::eSuccess;
+        }
+
+        LogInfo("vulkan: renderer will trigger swapchain resize");
+
+        context_->resize(pending_resize_->surface_extent, pending_resize_->framebuffer_extent);
+        createSwapchainData();
+
+        swapchain_needs_update_ = false;
+        pending_resize_.reset();
+    }
+
     auto &current_frame = getCurrentFrame();
 
     camera_.setAspect(
@@ -775,7 +804,8 @@ auto Renderer::frame() -> util::Result {
         case VK_SUBOPTIMAL_KHR:
             break;
         case VK_ERROR_OUT_OF_DATE_KHR:
-            rebuild_swapchain = true;
+            LogInfo("vulkan: renderer awaiting resize event");
+            swapchain_needs_update_ = true;
             break;
         default:
             LogError("cannot acquire next swapchain image: {}", string_VkResult(res));
@@ -978,17 +1008,13 @@ auto Renderer::frame() -> util::Result {
         case VK_SUBOPTIMAL_KHR:
             break;
         case VK_ERROR_OUT_OF_DATE_KHR:
-            rebuild_swapchain = true;
+            LogInfo("vulkan: renderer awaiting resize event");
+            swapchain_needs_update_ = true;
             break;
         default:
             LogError("cannot present swapchain image: {}", string_VkResult(res));
             return util::Result::eFailure;
         }
-    }
-
-    if (rebuild_swapchain) {
-        // TODO: rebuild swapchain here
-        return util::Result::eFailure;
     }
 
     return util::Result::eSuccess;

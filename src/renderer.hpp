@@ -312,6 +312,17 @@ public:
     auto camera() -> Camera & { return camera_; }
     auto camera() const -> const Camera & { return camera_; }
 
+    auto swapchainNeedsUpdate() const -> bool { return swapchain_needs_update_; }
+
+    auto resize(VkExtent2D surface_extent, VkExtent2D framebuffer_extent) {
+        if (surface_extent.width == 0 || surface_extent.height == 0 || framebuffer_extent.width == 0 ||
+            framebuffer_extent.height == 0) {
+            return;
+        }
+
+        pending_resize_ = {surface_extent, framebuffer_extent};
+    }
+
     template <util::TypedContiguousRange<StaticVertex> VR, util::TypedContiguousRange<const uint32_t> IR>
     auto createMesh(const VR &vertex_input_range, const IR &index_input_range) -> std::optional<MeshId> {
         const auto vertex_buffer_ptr = reinterpret_cast<const uint8_t *>(std::ranges::data(vertex_input_range));
@@ -509,6 +520,7 @@ private:
         VkSemaphore present_semaphore = VK_NULL_HANDLE;
     };
 
+    auto createSwapchainData() -> void;
     auto getCurrentFrame() -> FrameData & { return frames_[current_frame_]; }
 
     Renderer() = default;
@@ -523,7 +535,14 @@ private:
         VkSemaphore render_semaphore = VK_NULL_HANDLE;
     };
 
+    struct PendingResize {
+        VkExtent2D surface_extent, framebuffer_extent;
+    };
+
     VkCommandPool command_pool_ = VK_NULL_HANDLE;
+
+    std::optional<PendingResize> pending_resize_;
+    bool swapchain_needs_update_ = false;
 
     std::array<FrameData, kNumFramesInFlight> frames_;
     std::vector<SwapchainImageData> swapchain_data_;
