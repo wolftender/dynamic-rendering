@@ -391,48 +391,7 @@ private:
     // it is bound to the descriptor set layout, so it only holds
     // enough descriptors for N layouts, where N is the number of
     // frames in flight
-    class DescriptorSetHelper final {
-    public:
-        enum class DescriptorDataType {
-            eShaderStorageBuffer,
-            eUniformBuffer,
-            eSamplerTexture,
-        };
-
-        struct DescriptorDescription {
-            DescriptorDataType type;
-            uint32_t num_bindings;
-        };
-
-        struct Description {
-            std::vector<DescriptorDescription> layout;
-        };
-
-        static auto create(Renderer *renderer, const Description &description) -> std::unique_ptr<DescriptorSetHelper>;
-        ~DescriptorSetHelper() noexcept;
-
-        DescriptorSetHelper(const DescriptorSetHelper &) = delete;
-        auto operator=(const DescriptorSetHelper &) = delete;
-
-        DescriptorSetHelper(DescriptorSetHelper &&) noexcept = delete;
-        auto operator=(DescriptorSetHelper &&) noexcept = delete;
-
-        auto pool() const -> VkDescriptorPool { return pool_; }
-        auto description() const -> const Description & { return desc_; }
-        auto layout() const -> VkDescriptorSetLayout { return layout_; }
-        auto getSetForFrame(uint32_t frame) const -> VkDescriptorSet { return sets_[frame]; }
-
-    private:
-        DescriptorSetHelper() = default;
-
-        Renderer *renderer_ = nullptr;
-        Description desc_;
-
-        VkDescriptorSetLayout layout_ = VK_NULL_HANDLE;
-        VkDescriptorPool pool_ = VK_NULL_HANDLE;
-
-        std::array<VkDescriptorSet, kNumFramesInFlight> sets_;
-    };
+    template <uint32_t kNumSets = 1ull> class DescriptorSetHelper;
 
     class OpaqueGeometryPass final {
     public:
@@ -515,7 +474,7 @@ private:
     std::unique_ptr<ResourcePool<Mesh, kNumMeshPoolSize>> mesh_pool_;
 
     // render passes
-    std::unique_ptr<DescriptorSetHelper> descriptor_helper_ = nullptr;
+    // std::unique_ptr<DescriptorSetHelper> descriptor_helper_ = nullptr;
     std::unique_ptr<OpaqueGeometryPass> geometry_pass_ = nullptr;
 
     // draw queue
