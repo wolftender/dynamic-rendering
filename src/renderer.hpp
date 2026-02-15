@@ -1,6 +1,5 @@
 #pragma once
 #include <array>
-#include <deque>
 
 #include <glm/gtc/constants.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -107,10 +106,6 @@ private:
 };
 
 class Renderer final {
-private:
-    struct TextureTag {};
-    struct MeshTag {};
-
 public:
     static constexpr uint32_t kNumFramesInFlight = 2;
     static constexpr uint32_t kNumMaxPointLights = 20;
@@ -119,6 +114,9 @@ public:
     static constexpr uint32_t kNumMaxBonesPerObject = 200;
     static constexpr uint32_t kNumTexturePoolSize = 256;
     static constexpr uint32_t kNumMeshPoolSize = 512;
+
+    class Mesh;
+    class Texture;
 
     class IShaderLoader {
     public:
@@ -134,18 +132,20 @@ public:
         auto operator=(IShaderLoader &&) noexcept = delete;
     };
 
-    template <typename T> struct Identifier {
+    template <typename T> class ResourceId final {
+    public:
+        ResourceId(uint32_t index, uint32_t generation) : index_{index}, generation_{generation} {}
+
+        auto index() const -> uint32_t { return index_; }
+        auto generation() const -> uint32_t { return generation_; }
+
     private:
         uint32_t index_;
-        explicit Identifier(uint32_t index) : index_{index} {}
-
-    public:
-        size_t id() const { return index_; }
-        friend class Renderer;
+        uint32_t generation_;
     };
 
-    using MeshId = Identifier<MeshTag>;
-    using TextureId = Identifier<TextureTag>;
+    using MeshId = ResourceId<Mesh>;
+    using TextureId = ResourceId<Texture>;
 
     struct Description {
         Context *context;
@@ -218,8 +218,8 @@ public:
         Mesh(const Mesh &) = delete;
         auto operator=(const Mesh &) = delete;
 
-        Mesh(Mesh &&) noexcept = delete;
-        auto operator=(Mesh &&) noexcept = delete;
+        Mesh(Mesh &&) noexcept;
+        auto operator=(Mesh &&) noexcept -> Mesh &;
 
         ~Mesh() noexcept = default;
 
@@ -235,7 +235,7 @@ public:
     private:
         static auto create(
             Renderer *renderer, std::span<const uint8_t> vertex_buffer, uint32_t num_vertices,
-            std::span<const uint32_t> indices) -> std::unique_ptr<Mesh>;
+            std::span<const uint32_t> indices) -> std::optional<Mesh>;
 
         Mesh() = default;
 
@@ -273,8 +273,8 @@ public:
         Texture(const Texture &) = delete;
         auto operator=(const Texture &) = delete;
 
-        Texture(Texture &&) noexcept = delete;
-        auto operator=(Texture &&) noexcept = delete;
+        Texture(Texture &&) noexcept;
+        auto operator=(Texture &&) noexcept -> Texture &;
 
         ~Texture() noexcept;
 
@@ -285,7 +285,7 @@ public:
 
     private:
         static auto fromRgba(Renderer *renderer, const Description &desc, std::span<const uint8_t> rgba_data)
-            -> std::unique_ptr<Texture>;
+            -> std::optional<Texture>;
 
         Texture() = default;
 
@@ -331,12 +331,11 @@ public:
         auto mesh = Mesh::create(
             this, {vertex_buffer_ptr, vertex_buffer_size}, std::ranges::size(vertex_input_range), index_input_range);
 
-        auto id = mesh_pool_.insert(std::move(mesh));
-        if (!id.has_value()) {
+        if (!mesh.has_value()) {
             return std::nullopt;
         }
 
-        return MeshId{id.value()};
+        return addMesh(std::move(mesh.value()));
     }
 
     template <util::TypedContiguousRange<const uint8_t> R>
@@ -345,17 +344,15 @@ public:
         const auto rgba_buffer_size = std::ranges::size(rgba_data);
 
         auto texture = Texture::fromRgba(this, desc, {rgba_buffer_ptr, rgba_buffer_size});
-        auto id = texture_pool_.insert(std::move(texture));
-
-        if (!id.has_value()) {
+        if (!texture.has_value()) {
             return std::nullopt;
         }
 
-        return TextureId{id.value()};
+        return addTexture(std::move(texture.value()));
     }
 
     template <std::invocable<const Texture &> F> auto withTexture(TextureId handle, F consumer) const {
-        auto texture = texture_pool_.get(handle.id());
+        auto texture = getTexture(handle);
         if (!texture) {
             return;
         }
@@ -364,7 +361,7 @@ public:
     }
 
     template <std::invocable<const Mesh &> F> auto withMesh(MeshId handle, F consumer) const {
-        auto mesh = mesh_pool_.get(handle.id());
+        auto mesh = getMesh(handle);
         if (!mesh) {
             return;
         }
@@ -372,8 +369,8 @@ public:
         consumer(*mesh);
     }
 
-    auto deleteMesh(MeshId handle) { mesh_pool_.erase(handle.id()); }
-    auto deleteTexture(TextureId handle) { texture_pool_.erase(handle.id()); }
+    auto deleteMesh(MeshId handle) { unrefMesh(handle); }
+    auto deleteTexture(TextureId handle) { unrefTexture(handle); }
 
     auto frame() -> util::Result;
 
@@ -387,49 +384,8 @@ public:
     }
 
 private:
-    class TexturePool final {
-    public:
-        TexturePool();
-        ~TexturePool() noexcept;
-
-        TexturePool(const TexturePool &) = delete;
-        auto operator=(const TexturePool &) = delete;
-
-        TexturePool(TexturePool &&) noexcept = delete;
-        auto operator=(TexturePool &&) noexcept = delete;
-
-        auto get(uint32_t handle) const -> const Texture *;
-        auto insert(std::unique_ptr<Texture> texture) -> std::optional<uint32_t>;
-        auto erase(uint32_t handle) -> std::unique_ptr<Texture>;
-
-        auto numDescriptors() const -> uint32_t { return descriptors_.size(); }
-        auto descriptors() const -> const VkDescriptorImageInfo * { return descriptors_.data(); }
-
-    private:
-        std::array<VkDescriptorImageInfo, kNumTexturePoolSize> descriptors_;
-        std::array<std::unique_ptr<Texture>, kNumTexturePoolSize> textures_;
-        std::deque<uint32_t> free_list_;
-    };
-
-    class MeshPool final {
-    public:
-        MeshPool();
-        ~MeshPool() noexcept;
-
-        MeshPool(const MeshPool &) = delete;
-        auto operator=(const MeshPool &) = delete;
-
-        MeshPool(MeshPool &&) noexcept = delete;
-        auto operator=(MeshPool &&) noexcept = delete;
-
-        auto get(uint32_t handle) const -> const Mesh *;
-        auto insert(std::unique_ptr<Mesh> mesh) -> std::optional<uint32_t>;
-        auto erase(uint32_t handle) -> std::unique_ptr<Mesh>;
-
-    private:
-        std::array<std::unique_ptr<Mesh>, kNumMeshPoolSize> meshes_;
-        std::deque<uint32_t> free_list_;
-    };
+    template <typename T, uint32_t kPoolSize> class ResourcePool;
+    class BindlessTexturePool;
 
     // simple helper class to help us with our descriptor pools
     // it is bound to the descriptor set layout, so it only holds
@@ -520,6 +476,13 @@ private:
         VkSemaphore present_semaphore = VK_NULL_HANDLE;
     };
 
+    auto addMesh(Mesh &&mesh) -> std::optional<MeshId>;
+    auto addTexture(Texture &&texture) -> std::optional<TextureId>;
+    auto getMesh(const MeshId &id) const -> const Mesh *;
+    auto getTexture(const TextureId &id) const -> const Texture *;
+    auto unrefMesh(const MeshId &id) -> void;
+    auto unrefTexture(const TextureId &id) -> void;
+
     auto createSwapchainData() -> void;
     auto getCurrentFrame() -> FrameData & { return frames_[current_frame_]; }
 
@@ -547,8 +510,9 @@ private:
     std::array<FrameData, kNumFramesInFlight> frames_;
     std::vector<SwapchainImageData> swapchain_data_;
 
-    TexturePool texture_pool_;
-    MeshPool mesh_pool_;
+    // resource pools
+    std::unique_ptr<BindlessTexturePool> texture_pool_;
+    std::unique_ptr<ResourcePool<Mesh, kNumMeshPoolSize>> mesh_pool_;
 
     // render passes
     std::unique_ptr<DescriptorSetHelper> descriptor_helper_ = nullptr;

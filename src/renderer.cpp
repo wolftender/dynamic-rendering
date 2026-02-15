@@ -8,6 +8,208 @@
 
 namespace graphics {
 
+template <typename T, size_t kCapacity> class FixedSizeQueue final {
+public:
+    FixedSizeQueue() = default;
+    ~FixedSizeQueue() = default;
+
+    auto capacity() const -> size_t { return kCapacity; }
+    auto fill() const -> size_t { return fill_; }
+    auto empty() const -> bool { return 0ull == fill_; }
+    auto full() const -> bool { return kCapacity == fill_; }
+
+    auto push(T v) -> void {
+        if (full()) {
+            return;
+        }
+
+        const auto index = (begin_ + fill_) % kCapacity;
+        storage_[index] = std::move(v);
+
+        fill_++;
+    }
+
+    auto pop() -> std::optional<T> {
+        if (empty()) {
+            return std::nullopt;
+        }
+
+        auto value = std::move(storage_[begin_]);
+        begin_ = (begin_ + 1) % kCapacity;
+        fill_--;
+
+        return value;
+    }
+
+private:
+    size_t begin_ = 0ull, fill_ = 0ull;
+    std::array<T, kCapacity> storage_;
+};
+
+template <typename T, uint32_t kPoolSize> class Renderer::ResourcePool {
+public:
+    ResourcePool() {
+        for (uint32_t i = 0; i < kPoolSize; ++i) {
+            storage_[i].resource = std::nullopt;
+            storage_[i].valid = false;
+            storage_[i].generation = 0;
+            storage_[i].identifier = i;
+            free_ids_.push(i);
+        }
+    }
+
+    ~ResourcePool() = default;
+
+    ResourcePool(const ResourcePool &) = delete;
+    auto operator=(const ResourcePool &) = delete;
+
+    ResourcePool(ResourcePool &&) noexcept = delete;
+    auto operator=(ResourcePool &&) noexcept = delete;
+
+    auto storeResource(T resource, uint32_t frame) -> std::optional<ResourceId<T>> {
+        auto index = free_ids_.pop();
+        if (!index.has_value()) {
+            return std::nullopt;
+        }
+
+        auto &slot = storage_[index.value()];
+        auto id = ResourceId<T>{index.value(), slot.generation};
+
+        slot.resource = std::move(resource);
+        slot.valid = true;
+        slot.last_frame_id = frame;
+
+        return id;
+    }
+
+    auto getResource(const ResourceId<T> &id) const -> const T * {
+        auto &slot = storage_[id.index()];
+        if (id.generation() != slot.generation) {
+            return nullptr;
+        }
+
+        if (!slot.valid || !slot.resource.has_value()) {
+            return nullptr;
+        }
+
+        return &slot.resource.value();
+    }
+
+    auto refResource(const ResourceId<T> id, uint32_t frame) -> const T * {
+        auto &slot = storage_[id.index()];
+        if (id.generation() != slot.generation) {
+            return nullptr;
+        }
+
+        if (!slot.valid || !slot.resource.has_value()) {
+            return nullptr;
+        }
+
+        slot.last_frame_id = frame;
+        return &slot.resource.value();
+    }
+
+    auto destroyResource(const ResourceId<T> &id) -> void {
+        auto &slot = storage_[id.index()];
+        if (id.generation() != slot.generation) {
+            return;
+        }
+
+        if (!slot.valid || !slot.resource.has_value()) {
+            return;
+        }
+
+        slot.valid = false;
+        slot.generation++;
+        deletion_queues_[slot.last_frame_id].push(id.index());
+    }
+
+    auto garbageCollect(uint32_t last_frame) -> void {
+        garbageCollect(last_frame, []([[maybe_unused]] auto id, [[maybe_unused]] auto &&element) {});
+    }
+
+    template <std::invocable<uint32_t, T &&> F> auto garbageCollect(uint32_t last_frame, F consumer) -> void {
+        auto &queue = deletion_queues_[last_frame];
+        while (!queue.empty()) {
+            auto index = queue.pop();
+            auto &slot = storage_[index.value()];
+
+            consumer(index.value(), std::move(slot.resource.value()));
+            slot.resource.reset();
+        }
+    }
+
+private:
+    struct Slot {
+        std::optional<T> resource;
+        uint32_t identifier;
+        uint32_t generation;
+        uint32_t last_frame_id;
+        bool valid;
+    };
+
+    std::array<Slot, kPoolSize> storage_;
+    FixedSizeQueue<uint32_t, kPoolSize> free_ids_;
+    std::array<FixedSizeQueue<uint32_t, kPoolSize>, kNumFramesInFlight> deletion_queues_;
+};
+
+class Renderer::BindlessTexturePool final {
+public:
+    BindlessTexturePool() {
+        for (auto &descriptor : descriptors_) {
+            descriptor.sampler = VK_NULL_HANDLE;
+            descriptor.imageView = VK_NULL_HANDLE;
+            descriptor.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        }
+    }
+
+    ~BindlessTexturePool() = default;
+
+    BindlessTexturePool(const BindlessTexturePool &) = delete;
+    auto operator=(const BindlessTexturePool &) = delete;
+
+    BindlessTexturePool(BindlessTexturePool &&) noexcept = delete;
+    auto operator=(BindlessTexturePool &&) noexcept = delete;
+
+    auto storeResource(Texture resource, uint32_t frame) -> std::optional<ResourceId<Texture>> {
+        // get the handles before moving
+        const auto vk_view = resource.imageView().view();
+        const auto vk_sampler = resource.sampler();
+
+        const auto id = pool_.storeResource(std::move(resource), frame);
+        if (!id.has_value()) {
+            return std::nullopt;
+        }
+
+        const auto index = id->index();
+        descriptors_[index].sampler = vk_sampler;
+        descriptors_[index].imageView = vk_view;
+        descriptors_[index].imageLayout = VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL;
+
+        return id;
+    }
+
+    auto getResource(const ResourceId<Texture> &id) const -> const Texture * { return pool_.getResource(id); }
+
+    auto refResource(const ResourceId<Texture> id, uint32_t frame) -> const Texture * {
+        return pool_.refResource(id, frame);
+    }
+
+    auto destroyResource(const ResourceId<Texture> &id) -> void { return pool_.destroyResource(id); }
+
+    auto garbageCollect(uint32_t last_frame) -> void {
+        pool_.garbageCollect(last_frame, [&](uint32_t index, [[maybe_unused]] Texture &&t) {
+            descriptors_[index].sampler = VK_NULL_HANDLE;
+            descriptors_[index].imageView = VK_NULL_HANDLE;
+            descriptors_[index].imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        });
+    }
+
+private:
+    ResourcePool<Texture, kNumTexturePoolSize> pool_;
+    std::array<VkDescriptorImageInfo, kNumTexturePoolSize> descriptors_;
+};
+
 template <typename cbBufferDataType> class Renderer::SceneBufferHelper final {
 public:
     static constexpr auto kDataSize = sizeof(cbBufferDataType);
@@ -122,42 +324,96 @@ private:
     Renderer *renderer_ = nullptr;
 };
 
-auto Renderer::Mesh::create(
-    Renderer *renderer, std::span<const uint8_t> vertex_buffer, uint32_t num_vertices,
-    std::span<const uint32_t> indices) -> std::unique_ptr<Mesh> {
-    std::unique_ptr<Mesh> mesh{new (std::nothrow) Mesh()};
-    if (!mesh) {
-        LogError("vulkan: failed to allocate mesh object");
-        return nullptr;
+Renderer::Mesh::Mesh(Mesh &&m) noexcept {
+    renderer_ = std::move(m.renderer_);
+    num_vertices_ = std::move(m.num_vertices_);
+    num_indices_ = std::move(m.num_indices_);
+    vertex_buffer_ = std::move(m.vertex_buffer_);
+    index_bufer_ = std::move(m.index_bufer_);
+    vertex_buffer_size_ = std::move(m.vertex_buffer_size_);
+    index_buffer_size_ = std::move(m.index_buffer_size_);
+
+    m.renderer_ = nullptr;
+    m.num_vertices_ = 0;
+    m.num_indices_ = 0;
+    m.vertex_buffer_size_ = 0;
+    m.index_buffer_size_ = 0;
+}
+
+auto Renderer::Mesh::operator=(Mesh &&m) noexcept -> Mesh & {
+    if (this != &m) {
+        renderer_ = std::move(m.renderer_);
+        num_vertices_ = std::move(m.num_vertices_);
+        num_indices_ = std::move(m.num_indices_);
+        vertex_buffer_ = std::move(m.vertex_buffer_);
+        index_bufer_ = std::move(m.index_bufer_);
+        vertex_buffer_size_ = std::move(m.vertex_buffer_size_);
+        index_buffer_size_ = std::move(m.index_buffer_size_);
+
+        m.renderer_ = nullptr;
+        m.num_vertices_ = 0;
+        m.num_indices_ = 0;
+        m.vertex_buffer_size_ = 0;
+        m.index_buffer_size_ = 0;
     }
 
-    mesh->renderer_ = renderer;
-    const auto &memory = mesh->renderer_->context_->memory();
+    return *this;
+}
 
-    mesh->num_vertices_ = num_vertices;
-    mesh->num_indices_ = std::size(indices);
+auto Renderer::Mesh::create(
+    Renderer *renderer, std::span<const uint8_t> vertex_buffer, uint32_t num_vertices,
+    std::span<const uint32_t> indices) -> std::optional<Mesh> {
+    Mesh mesh;
 
-    mesh->vertex_buffer_size_ = vertex_buffer.size();
-    mesh->index_buffer_size_ = indices.size() * sizeof(uint32_t);
+    mesh.renderer_ = renderer;
+    const auto &memory = mesh.renderer_->context_->memory();
 
-    mesh->vertex_buffer_ = memory.createBuffer(VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, vertex_buffer);
-    mesh->index_bufer_ = memory.createBuffer(
+    mesh.num_vertices_ = num_vertices;
+    mesh.num_indices_ = std::size(indices);
+
+    mesh.vertex_buffer_size_ = vertex_buffer.size();
+    mesh.index_buffer_size_ = indices.size() * sizeof(uint32_t);
+
+    mesh.vertex_buffer_ = memory.createBuffer(VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, vertex_buffer);
+    mesh.index_bufer_ = memory.createBuffer(
         VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
-        std::span<const uint8_t>{reinterpret_cast<const uint8_t *>(indices.data()), mesh->index_buffer_size_});
+        std::span<const uint8_t>{reinterpret_cast<const uint8_t *>(indices.data()), mesh.index_buffer_size_});
 
-    return mesh;
+    return std::move(mesh);
+}
+
+Renderer::Texture::Texture(Texture &&t) noexcept {
+    renderer_ = std::move(t.renderer_);
+    description_ = std::move(t.description_);
+    image_ = std::move(t.image_);
+    image_view_ = std::move(t.image_view_);
+    sampler_ = std::move(t.sampler_);
+
+    t.renderer_ = nullptr;
+    t.sampler_ = VK_NULL_HANDLE;
+}
+
+auto Renderer::Texture::operator=(Texture &&t) noexcept -> Texture & {
+    if (this != &t) {
+        renderer_ = std::move(t.renderer_);
+        description_ = std::move(t.description_);
+        image_ = std::move(t.image_);
+        image_view_ = std::move(t.image_view_);
+        sampler_ = std::move(t.sampler_);
+
+        t.renderer_ = nullptr;
+        t.sampler_ = VK_NULL_HANDLE;
+    }
+
+    return *this;
 }
 
 auto Renderer::Texture::fromRgba(Renderer *renderer, const Description &desc, std::span<const uint8_t> rgba_data)
-    -> std::unique_ptr<Texture> {
-    std::unique_ptr<Texture> texture{new (std::nothrow) Texture()};
-    if (!texture) {
-        LogError("vulkan: failed to allocate texture");
-        return nullptr;
-    }
+    -> std::optional<Texture> {
+    Texture texture;
 
-    texture->renderer_ = renderer;
-    texture->description_ = desc;
+    texture.renderer_ = renderer;
+    texture.description_ = desc;
 
     VkFilter min_filter, mag_filter;
     switch (desc.min_filter) {
@@ -169,7 +425,7 @@ auto Renderer::Texture::fromRgba(Renderer *renderer, const Description &desc, st
         break;
     default:
         LogError("vulkan: invalid texture min filter");
-        return nullptr;
+        return std::nullopt;
     }
 
     switch (desc.mag_filter) {
@@ -181,13 +437,13 @@ auto Renderer::Texture::fromRgba(Renderer *renderer, const Description &desc, st
         break;
     default:
         LogError("vulkan: invalid texture min filter");
-        return nullptr;
+        return std::nullopt;
     }
 
-    texture->image_ = texture->renderer_->context_->memory().createImageRgba(
+    texture.image_ = texture.renderer_->context_->memory().createImageRgba(
         VK_IMAGE_USAGE_SAMPLED_BIT, {desc.width, desc.height}, rgba_data);
-    texture->image_view_ =
-        texture->image().createView(VK_IMAGE_VIEW_TYPE_2D, texture->image().format(), VK_IMAGE_ASPECT_COLOR_BIT);
+    texture.image_view_ =
+        texture.image().createView(VK_IMAGE_VIEW_TYPE_2D, texture.image().format(), VK_IMAGE_ASPECT_COLOR_BIT);
 
     VkSamplerCreateInfo sampler_desc = {
         .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
@@ -199,8 +455,8 @@ auto Renderer::Texture::fromRgba(Renderer *renderer, const Description &desc, st
         .maxLod = 1,
     };
 
-    VK_CHECK_ERROR(vkCreateSampler(texture->renderer_->context_->device(), &sampler_desc, nullptr, &texture->sampler_));
-    return texture;
+    VK_CHECK_ERROR(vkCreateSampler(texture.renderer_->context_->device(), &sampler_desc, nullptr, &texture.sampler_));
+    return std::move(texture);
 }
 
 Renderer::Texture::~Texture() noexcept {
@@ -209,99 +465,6 @@ Renderer::Texture::~Texture() noexcept {
         sampler_ = VK_NULL_HANDLE;
     }
 }
-
-Renderer::TexturePool::TexturePool() {
-    for (uint32_t i = 0; i < kNumTexturePoolSize; ++i) {
-        free_list_.push_back(i);
-        descriptors_[i].imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        descriptors_[i].imageView = VK_NULL_HANDLE;
-        descriptors_[i].sampler = VK_NULL_HANDLE;
-        textures_[i] = nullptr;
-    }
-}
-
-auto Renderer::TexturePool::get(uint32_t handle) const -> const Texture * {
-    if (handle > textures_.size() || !textures_[handle]) {
-        return nullptr;
-    }
-
-    return textures_[handle].get();
-}
-
-auto Renderer::TexturePool::insert(std::unique_ptr<Texture> texture) -> std::optional<uint32_t> {
-    if (free_list_.empty()) {
-        return std::nullopt;
-    }
-
-    auto slot = free_list_.front();
-    free_list_.pop_front();
-
-    textures_[slot] = std::move(texture);
-    const auto &t = *textures_[slot].get();
-
-    descriptors_[slot].imageLayout = VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL;
-    descriptors_[slot].imageView = t.imageView().view();
-    descriptors_[slot].sampler = t.sampler();
-
-    return slot;
-}
-
-auto Renderer::TexturePool::erase(uint32_t handle) -> std::unique_ptr<Texture> {
-    if (handle > textures_.size() || !textures_[handle]) {
-        return nullptr;
-    }
-
-    descriptors_[handle].imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    descriptors_[handle].imageView = VK_NULL_HANDLE;
-    descriptors_[handle].sampler = VK_NULL_HANDLE;
-
-    auto texture = std::move(textures_[handle]);
-    free_list_.push_front(handle);
-
-    return texture;
-}
-
-Renderer::TexturePool::~TexturePool() noexcept {}
-
-Renderer::MeshPool::MeshPool() {
-    for (uint32_t i = 0; i < kNumMeshPoolSize; ++i) {
-        free_list_.push_back(i);
-        meshes_[i] = nullptr;
-    }
-}
-
-auto Renderer::MeshPool::get(uint32_t handle) const -> const Mesh * {
-    if (handle > meshes_.size() || !meshes_[handle]) {
-        return nullptr;
-    }
-
-    return meshes_[handle].get();
-}
-
-auto Renderer::MeshPool::insert(std::unique_ptr<Mesh> mesh) -> std::optional<uint32_t> {
-    if (free_list_.empty()) {
-        return std::nullopt;
-    }
-
-    auto slot = free_list_.front();
-    free_list_.pop_front();
-
-    meshes_[slot] = std::move(mesh);
-    return slot;
-}
-
-auto Renderer::MeshPool::erase(uint32_t handle) -> std::unique_ptr<Mesh> {
-    if (handle > meshes_.size() || !meshes_[handle]) {
-        return nullptr;
-    }
-
-    auto mesh = std::move(meshes_[handle]);
-    free_list_.push_front(handle);
-
-    return mesh;
-}
-
-Renderer::MeshPool::~MeshPool() noexcept {}
 
 auto Renderer::DescriptorSetHelper::create(Renderer *renderer, const Description &description)
     -> std::unique_ptr<DescriptorSetHelper> {
@@ -471,6 +634,8 @@ auto Renderer::create(const Description &description) -> std::unique_ptr<Rendere
     }
 
     renderer->context_ = description.context;
+    renderer->mesh_pool_ = std::make_unique<ResourcePool<Mesh, kNumMeshPoolSize>>();
+    renderer->texture_pool_ = std::make_unique<BindlessTexturePool>();
     renderer->createSwapchainData();
 
     for (size_t i = 0; i < kNumFramesInFlight; ++i) {
@@ -541,6 +706,19 @@ auto Renderer::create(const Description &description) -> std::unique_ptr<Rendere
 
     return renderer;
 }
+
+auto Renderer::addMesh(Mesh &&mesh) -> std::optional<MeshId> {
+    return mesh_pool_->storeResource(std::move(mesh), current_frame_);
+}
+
+auto Renderer::addTexture(Texture &&texture) -> std::optional<TextureId> {
+    return texture_pool_->storeResource(std::move(texture), current_frame_);
+}
+
+auto Renderer::getMesh(const MeshId &id) const -> const Mesh * { return mesh_pool_->getResource(id); }
+auto Renderer::getTexture(const TextureId &id) const -> const Texture * { return texture_pool_->getResource(id); }
+auto Renderer::unrefMesh(const MeshId &id) -> void { mesh_pool_->destroyResource(id); }
+auto Renderer::unrefTexture(const TextureId &id) -> void { texture_pool_->destroyResource(id); }
 
 auto Renderer::createSwapchainData() -> void {
     const auto surface_extent = context_->surfaceExtent();
@@ -793,6 +971,10 @@ auto Renderer::frame() -> util::Result {
     VK_CHECK_ERROR(vkWaitForFences(context_->device(), 1, &current_frame.fence, VK_TRUE, UINT64_MAX));
     VK_CHECK_ERROR(vkResetFences(context_->device(), 1, &current_frame.fence));
 
+    // this frame has definitely ended rendering and all the resources can be garbage collected
+    mesh_pool_->garbageCollect(current_frame_);
+    texture_pool_->garbageCollect(current_frame_);
+
     uint32_t image_index = 0;
     {
         VkResult res = vkAcquireNextImageKHR(
@@ -934,20 +1116,23 @@ auto Renderer::frame() -> util::Result {
 
     for (uint32_t i = 0; i < draw_queue_fill_; ++i) {
         const auto &draw_call = draw_queue_[i].value();
-        withMesh(draw_call.mesh, [&](const Mesh &mesh) {
-            vkCmdBindVertexBuffers(command_buffer, 0, 1, mesh.vertexBuffer().addrOf(), &vertex_offset);
-            vkCmdBindIndexBuffer(command_buffer, mesh.indexBuffer().buffer(), 0, VK_INDEX_TYPE_UINT32);
+        const auto mesh_ref = mesh_pool_->refResource(draw_call.mesh, current_frame_);
 
-            push_constants.frame_heap = scene_buffer->deviceAddress();
-            push_constants.object_id = i;
+        if (!mesh_ref) {
+            continue;
+        }
 
-            vkCmdPushConstants(
-                command_buffer, geometry_pass_->pipelineLayout(),
-                VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                sizeof(OpaqueGeometryPass::cbPushConstantBuffer), &push_constants);
+        vkCmdBindVertexBuffers(command_buffer, 0, 1, mesh_ref->vertexBuffer().addrOf(), &vertex_offset);
+        vkCmdBindIndexBuffer(command_buffer, mesh_ref->indexBuffer().buffer(), 0, VK_INDEX_TYPE_UINT32);
 
-            vkCmdDrawIndexed(command_buffer, mesh.numIndices(), 1, 0, 0, 0);
-        });
+        push_constants.frame_heap = scene_buffer->deviceAddress();
+        push_constants.object_id = i;
+
+        vkCmdPushConstants(
+            command_buffer, geometry_pass_->pipelineLayout(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+            0, sizeof(OpaqueGeometryPass::cbPushConstantBuffer), &push_constants);
+
+        vkCmdDrawIndexed(command_buffer, mesh_ref->numIndices(), 1, 0, 0, 0);
     }
 
     vkCmdEndRendering(command_buffer);
