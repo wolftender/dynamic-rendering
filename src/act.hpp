@@ -1,3 +1,4 @@
+#pragma once
 #include <concepts>
 #include <optional>
 #include <span>
@@ -123,6 +124,7 @@ enum class CommandType : u32 {
     eSubmeshSetLayout           = 0x30060001,   // [uint32]
     eSubmeshSetVertices         = 0x30060002,   // [buffer]
     eSubmeshSetIndices          = 0x30060003,   // [buffer]
+    eSubmeshSetMaterial         = 0x30060004,   // [uint32]
 
     eSkinAddNode                = 0x30070001,   // [uint32]
 
@@ -194,6 +196,7 @@ struct Model final {
         SubmeshVertexLayout layout;
         std::vector<V> vertices;
         std::vector<u32> indices;
+        u32 material;
     };
 
     struct Skin final {

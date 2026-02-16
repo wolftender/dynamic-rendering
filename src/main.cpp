@@ -11,6 +11,7 @@
 #include "renderer.hpp"
 #include "act.hpp"
 #include "assets.hpp"
+#include "model.hpp"
 
 #define GLFW_FATAL_ERROR(glfw_call_name)                                                                               \
     do {                                                                                                               \
@@ -89,7 +90,7 @@ private:
         const asset::ArchiveReader *archive_ = nullptr;
     };
 
-    auto loadMeshes() -> util::Result;
+    auto loadModels() -> util::Result;
     auto loadCubeMesh() -> util::Result;
 
     ApplicationState() = default;
@@ -101,7 +102,8 @@ private:
     std::unique_ptr<graphics::Context> graphics_context_ = {};
     std::unique_ptr<graphics::Renderer> renderer_ = {};
 
-    std::optional<graphics::Renderer::MeshId> test_mesh_ = {};
+    std::unique_ptr<graphics::Model> test_model_ = {};
+    std::optional<graphics::Renderer::MeshId> cube_mesh_ = {};
 };
 
 auto main([[maybe_unused]] int argc, [[maybe_unused]] char **argv) -> int {
@@ -240,7 +242,12 @@ auto ApplicationState::create(const Description &description) -> std::unique_ptr
     state->renderer_ = graphics::Renderer::create(renderer_desc);
     LogInfo("created renderer object");
 
-    if (util::Result::eSuccess != state->loadMeshes()) {
+    if (util::Result::eSuccess != state->loadCubeMesh()) {
+        LogError("failed to create cube mesh");
+        return nullptr;
+    }
+
+    if (util::Result::eSuccess != state->loadModels()) {
         LogError("failed to load resources");
         return nullptr;
     }
@@ -248,7 +255,7 @@ auto ApplicationState::create(const Description &description) -> std::unique_ptr
     return state;
 }
 
-auto ApplicationState::loadMeshes() -> util::Result {
+auto ApplicationState::loadModels() -> util::Result {
     const auto act_buffer = main_archive_->reader().getFileContent("wakamo.act");
     if (!act_buffer.has_value()) {
         LogError("failed to read wakamo.act");
@@ -265,22 +272,10 @@ auto ApplicationState::loadMeshes() -> util::Result {
     }
 
     LogInfo("model has {} nodes", model->nodes.size());
+    test_model_ = graphics::Model::fromAct(renderer_.get(), model.value());
 
-    // get the first mesh and translate into a buffer for renderer
-    const auto &submesh_id = model->meshes[0].submesh_ids[1];
-    const auto &submesh = std::get<act::Model::RiggedSubmesh>(model->submeshes[submesh_id]);
-
-    std::vector<graphics::Renderer::StaticVertex> vertices{submesh.vertices.size()};
-    for (size_t i = 0; i < submesh.vertices.size(); ++i) {
-        vertices[i].position = submesh.vertices[i].position;
-        vertices[i].normal = submesh.vertices[i].normal;
-        vertices[i].tangent = submesh.vertices[i].tangent;
-        vertices[i].uv = submesh.vertices[i].texcoord;
-    }
-
-    test_mesh_ = renderer_->createMesh(vertices, submesh.indices);
-    if (!test_mesh_) {
-        LogError("failed to upload gpu mesh");
+    if (!test_model_) {
+        LogError("failed to load act model");
         return util::Result::eFailure;
     }
 
@@ -321,8 +316,8 @@ auto ApplicationState::loadCubeMesh() -> util::Result {
         12, 13, 14, 12, 14, 15, 16, 17, 18, 16, 18, 19, 20, 21, 22, 20, 22, 23,
     };
 
-    test_mesh_ = renderer_->createMesh(kCubeVertices, kCubeIndices);
-    if (!test_mesh_) {
+    cube_mesh_ = renderer_->createMesh(kCubeVertices, kCubeIndices);
+    if (!cube_mesh_.has_value()) {
         LogError("failed to upload gpu mesh");
         return util::Result::eFailure;
     }
@@ -359,12 +354,12 @@ auto ApplicationState::run() -> util::Result {
 
         for (const auto &position : kCubePositions) {
             graphics::Renderer::OpaqueDrawDescription draw_desc = {
-                .mesh = test_mesh_.value(),
+                .mesh = cube_mesh_.value(),
                 .world_matrix = glm::fmat4x4{1.0f},
             };
 
             draw_desc.world_matrix =
-                glm::scale(glm::translate(draw_desc.world_matrix, position), glm::fvec3{200.0f, 200.0f, 200.0f});
+                glm::scale(glm::translate(draw_desc.world_matrix, position), glm::fvec3{1.0f, 1.0f, 1.0f});
             renderer_->drawOpaqueMesh(std::move(draw_desc));
         }
 

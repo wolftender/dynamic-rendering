@@ -141,6 +141,8 @@ auto parseCommandType(u32 v) -> std::optional<CommandType> {
         return CommandType::eSubmeshSetVertices;
     case 0x30060003:
         return CommandType::eSubmeshSetIndices;
+    case 0x30060004:
+        return CommandType::eSubmeshSetMaterial;
 
     case 0x30070001:
         return CommandType::eSkinAddNode;
@@ -436,6 +438,7 @@ auto parseSubmeshBlock(std::span<const u8> block_buffer) -> std::optional<Model:
     std::span<const u8> vertex_buffer;
     std::vector<u32> indices;
     act::SubmeshVertexLayout layout;
+    u32 material;
 
     while (auto command_type = readCommandType(block_reader)) {
         switch (*command_type) {
@@ -471,6 +474,11 @@ auto parseSubmeshBlock(std::span<const u8> block_buffer) -> std::optional<Model:
             break;
         }
 
+        case act::CommandType::eSubmeshSetMaterial:
+            SIZED_PROPERTY_ASSERT(block_reader, sizeof(u32));
+            READ_OR_ERROR(u32, block_reader, material);
+            break;
+
         default:
             LogError("act: invalid mesh command type {}", static_cast<uint32_t>(*command_type));
             return std::nullopt;
@@ -483,6 +491,7 @@ auto parseSubmeshBlock(std::span<const u8> block_buffer) -> std::optional<Model:
 
         submesh.indices = std::move(indices);
         submesh.layout = layout;
+        submesh.material = material;
 
         constexpr size_t kBytesPerVertex = 15 * 4; // fields * bytes per field
         const auto num_vertices = vertex_buffer.size() / kBytesPerVertex;
@@ -509,6 +518,7 @@ auto parseSubmeshBlock(std::span<const u8> block_buffer) -> std::optional<Model:
 
         submesh.indices = std::move(indices);
         submesh.layout = layout;
+        submesh.material = material;
 
         constexpr size_t kBytesPerVertex = 23 * 4; // fields * bytes per field
         const auto num_vertices = vertex_buffer.size() / kBytesPerVertex;

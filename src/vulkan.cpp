@@ -193,6 +193,7 @@ Image::Image(Image &&i) noexcept {
     image_ = i.image_;
     allocation_ = i.allocation_;
     allocation_info_ = std::move(i.allocation_info_);
+    format_ = i.format_;
 
     i.device_ = VK_NULL_HANDLE;
     i.allocator_ = VK_NULL_HANDLE;
@@ -209,6 +210,7 @@ auto Image::operator=(Image &&i) noexcept -> Image & {
         image_ = i.image_;
         allocation_ = i.allocation_;
         allocation_info_ = std::move(i.allocation_info_);
+        format_ = i.format_;
 
         i.device_ = VK_NULL_HANDLE;
         i.allocator_ = VK_NULL_HANDLE;
@@ -1042,7 +1044,7 @@ auto Context::MemoryHelper::createImageRgba(
                     .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
                     .mipLevel = 0,
                     .baseArrayLayer = 0,
-                    .layerCount = 0,
+                    .layerCount = 1,
                 },
             .imageExtent = VkExtent3D{extent.width, extent.height, 1},
         };

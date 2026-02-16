@@ -10,6 +10,7 @@ set(GAME_SOURCE_FILE_LIST
     ${GAME_SRC_DIR}/vulkan.cpp
     ${GAME_SRC_DIR}/renderer.cpp
     ${GAME_SRC_DIR}/assets.cpp
+    ${GAME_SRC_DIR}/model.cpp
 )
 
 # compresset assets

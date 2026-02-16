@@ -371,6 +371,8 @@ public:
 
     auto deleteMesh(MeshId handle) { unrefMesh(handle); }
     auto deleteTexture(TextureId handle) { unrefTexture(handle); }
+    auto getMesh(const MeshId &id) const -> const Mesh *;
+    auto getTexture(const TextureId &id) const -> const Texture *;
 
     auto frame() -> util::Result;
 
@@ -437,8 +439,6 @@ private:
 
     auto addMesh(Mesh &&mesh) -> std::optional<MeshId>;
     auto addTexture(Texture &&texture) -> std::optional<TextureId>;
-    auto getMesh(const MeshId &id) const -> const Mesh *;
-    auto getTexture(const TextureId &id) const -> const Texture *;
     auto unrefMesh(const MeshId &id) -> void;
     auto unrefTexture(const TextureId &id) -> void;
 

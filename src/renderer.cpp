@@ -378,10 +378,60 @@ public:
         };
 
         pool->descriptor_helper_ = TextureDescriptorHelper::create(renderer, texture_descriptor_desc);
+
+        // create a placeholder image for null textures
+        {
+            constexpr uint32_t kNullImageWidth = 4;
+            constexpr uint32_t kNullImageHeight = 4;
+            constexpr uint32_t kNullImageDepth = 4; // rgba
+
+            std::vector<uint8_t> pixels;
+            pixels.resize(kNullImageWidth * kNullImageWidth * kNullImageDepth);
+
+            auto p = pixels.begin();
+            for (uint32_t y = 0; y < kNullImageHeight; ++y) {
+                for (uint32_t x = 0; x < kNullImageWidth; ++x) {
+                    (*p++) = (x % 2) == (y % 2) ? 0 : 255;
+                    (*p++) = 0;
+                    (*p++) = (x % 2) == (y % 2) ? 0 : 255;
+                    (*p++) = 255;
+                }
+            }
+
+            pool->null_image_ = pool->renderer_->context_->memory().createImageRgba(
+                VK_IMAGE_USAGE_SAMPLED_BIT, {kNullImageWidth, kNullImageHeight}, pixels);
+            pool->null_image_view_ = pool->null_image_.createView(
+                VK_IMAGE_VIEW_TYPE_2D, pool->null_image_.format(), VK_IMAGE_ASPECT_COLOR_BIT);
+
+            VkSamplerCreateInfo sampler_desc = {
+                .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+                .magFilter = VK_FILTER_NEAREST,
+                .minFilter = VK_FILTER_NEAREST,
+                .mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
+                .anisotropyEnable = VK_TRUE,
+                .maxAnisotropy = 8.0f,
+                .maxLod = 1,
+            };
+
+            VK_CHECK_ERROR(
+                vkCreateSampler(pool->renderer_->context_->device(), &sampler_desc, nullptr, &pool->null_sampler_));
+
+            for (auto &descriptor : pool->descriptors_) {
+                descriptor.imageLayout = VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL;
+                descriptor.imageView = pool->null_image_view_.view();
+                descriptor.sampler = pool->null_sampler_;
+            }
+        }
+
         return pool;
     }
 
-    ~BindlessTexturePool() = default;
+    ~BindlessTexturePool() {
+        if (VK_NULL_HANDLE != null_sampler_) {
+            vkDestroySampler(renderer_->context_->device(), null_sampler_, nullptr);
+            null_sampler_ = VK_NULL_HANDLE;
+        }
+    }
 
     BindlessTexturePool(const BindlessTexturePool &) = delete;
     auto operator=(const BindlessTexturePool &) = delete;
@@ -422,9 +472,9 @@ public:
 
     auto garbageCollect(uint32_t last_frame) -> void {
         pool_.garbageCollect(last_frame, [&](uint32_t index, [[maybe_unused]] Texture &&t) {
-            descriptors_[index].sampler = VK_NULL_HANDLE;
-            descriptors_[index].imageView = VK_NULL_HANDLE;
-            descriptors_[index].imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            descriptors_[index].sampler = null_sampler_;
+            descriptors_[index].imageView = null_image_view_.view();
+            descriptors_[index].imageLayout = VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL;
 
             setAllBits(true);
         });
@@ -467,6 +517,10 @@ private:
 
     Renderer *renderer_ = nullptr;
     std::array<bool, kNumTextureSets> dirty_bit_;
+
+    Image null_image_;
+    Image::View null_image_view_;
+    VkSampler null_sampler_ = VK_NULL_HANDLE;
 
     std::unique_ptr<TextureDescriptorHelper> descriptor_helper_;
     ResourcePool<Texture, kNumTexturePoolSize> pool_;
