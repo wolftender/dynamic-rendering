@@ -56,6 +56,8 @@ class Model final {
             return nullptr;
         }
 
+        auto id() const -> Renderer::ResourceId<T> { return handle_.value(); }
+
     private:
         Renderer *renderer_ = nullptr;
         std::optional<Renderer::ResourceId<T>> handle_;
@@ -402,6 +404,8 @@ public:
             consumer(nodes_[id.index()]);
         }
     }
+
+    auto render(Renderer &renderer, const Pose &pose, const glm::fmat4x4 &world) const -> void;
 
     static auto fromAct(Renderer *renderer, const act::Model &act_model) -> std::unique_ptr<Model>;
 

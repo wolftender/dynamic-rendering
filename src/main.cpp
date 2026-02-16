@@ -339,6 +339,8 @@ auto ApplicationState::run() -> util::Result {
         glm::fvec3{2.0f, 2.0f, 2.0f},
     };
 
+    const auto bind_pose = test_model_->createPose();
+
     while (!glfwWindowShouldClose(window_handle_)) {
         const auto now = Clock::now();
         const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(now - last_frame).count();
@@ -359,9 +361,12 @@ auto ApplicationState::run() -> util::Result {
             };
 
             draw_desc.world_matrix =
-                glm::scale(glm::translate(draw_desc.world_matrix, position), glm::fvec3{1.0f, 1.0f, 1.0f});
+                glm::scale(glm::translate(draw_desc.world_matrix, position), glm::fvec3{0.5f, 0.5f, 0.5f});
             renderer_->drawOpaqueMesh(std::move(draw_desc));
         }
+
+        test_model_->render(
+            *renderer_.get(), *bind_pose.get(), glm::scale(glm::fmat4x4{1.0f}, glm::fvec3{250.0f, 250.0f, 250.0f}));
 
         if (util::Result::eSuccess != renderer_->frame()) {
             LogError("failed to render frame");

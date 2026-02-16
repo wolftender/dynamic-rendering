@@ -117,6 +117,7 @@ auto Model::Pose::recomputeTransformSubtree(NodeId root) -> void {
     matrix = glm::translate(matrix, node->translation());
     matrix = glm::toMat4(node->rotation()) * matrix;
     matrix = glm::scale(matrix, node->scale_);
+    node->transform_ = matrix;
 
     for (auto &child : node->children_) {
         recomputeTransformSubtree(child);
@@ -141,7 +142,7 @@ auto Model::addMeshImpl(
     }
 
     meshes_.emplace_back(Mesh{this, RendererResource<Renderer::Mesh>{renderer_, mesh_rc.value()}, material});
-    return MeshId{static_cast<uint32_t>(meshes_.size())};
+    return MeshId{static_cast<uint32_t>(meshes_.size() - 1)};
 }
 
 auto Model::addRgbaTextureImpl(uint32_t width, uint32_t height, std::span<const uint8_t> data)
@@ -159,12 +160,12 @@ auto Model::addRgbaTextureImpl(uint32_t width, uint32_t height, std::span<const 
     }
 
     textures_.emplace_back(Texture{this, RendererResource<Renderer::Texture>{renderer_, texture_rc.value()}});
-    return TextureId{static_cast<uint32_t>(textures_.size())};
+    return TextureId{static_cast<uint32_t>(textures_.size() - 1)};
 }
 
 auto Model::addMaterial(const Material::Description &desc) -> std::optional<MaterialId> {
     materials_.emplace_back(Material{this, desc.diffuse, desc.normal, desc.specular});
-    return MaterialId{static_cast<uint32_t>(materials_.size())};
+    return MaterialId{static_cast<uint32_t>(materials_.size() - 1)};
 }
 
 auto Model::addNode(NodeId parent, std::string_view name) -> std::optional<NodeId> {
@@ -247,6 +248,29 @@ auto Model::getMaterial(MaterialId handle) const -> const Material * {
     }
 
     return &materials_[handle.index()];
+}
+
+auto Model::render(Renderer &renderer, const Pose &pose, const glm::fmat4x4 &world) const -> void {
+    if (&renderer != renderer_) {
+        return;
+    }
+
+    for (const auto &node_id : mesh_nodes_) {
+        const auto &node = nodes_[node_id.index()];
+        const auto &pose_node = pose.nodes_[node_id.index()];
+        const auto matrix = world * pose_node.transform();
+
+        for (const auto &mesh_id : node.meshes()) {
+            const auto &mesh = meshes_[mesh_id.index()];
+
+            Renderer::OpaqueDrawDescription desc = {
+                .mesh = mesh.handle().id(),
+                .world_matrix = matrix,
+            };
+
+            renderer.drawOpaqueMesh(std::move(desc));
+        }
+    }
 }
 
 auto Model::fromAct(Renderer *renderer, const act::Model &act_model) -> std::unique_ptr<Model> {

@@ -131,6 +131,8 @@ auto parseCommandType(u32 v) -> std::optional<CommandType> {
         return CommandType::eNodeSetMesh;
     case 0x30040005:
         return CommandType::eNodeSetSkin;
+    case 0x30040006:
+        return CommandType::eNodeSetParent;
 
     case 0x30050001:
         return CommandType::eMeshAddSubmesh;
