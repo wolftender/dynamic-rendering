@@ -18,7 +18,11 @@ add_slang_shader(${GAME_SRC_DIR}/shaders/shader.slang)
 add_asset_compressed(${ASSET_DIR}/wakamo.act)
 add_packed_assets(${CMAKE_CURRENT_BINARY_DIR}/assets.arc)
 
-add_executable(${PROJECT_NAME} ${GAME_SOURCE_FILE_LIST})
+if(WIN32)
+    add_executable(${PROJECT_NAME} WIN32 ${GAME_SOURCE_FILE_LIST})
+else()
+    add_executable(${PROJECT_NAME} ${GAME_SOURCE_FILE_LIST})
+endif()
 
 # add resources on windows
 if(WIN32)
@@ -42,7 +46,10 @@ if(WIN32)
             /ENTRY:mainCRTStartup
         )
     else()
-        set(SUBSYSTEM_LINKER_OPTIONS "-Wl,/subsystem:console")
+        set(SUBSYSTEM_LINKER_OPTIONS
+            -Wl,/subsystem:windows
+            -Wl,/entry:mainCRTStartup
+        )
     endif()
 endif()
 
