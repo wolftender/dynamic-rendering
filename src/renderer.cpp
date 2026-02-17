@@ -56,6 +56,7 @@ public:
 
     struct DescriptorDescription {
         DescriptorDataType type;
+        VkShaderStageFlags stages;
         uint32_t num_bindings;
     };
 
@@ -90,6 +91,7 @@ public:
             const auto &element = helper->desc_.layout[i];
             bindings[i].binding = i;
             bindings[i].descriptorCount = element.num_bindings;
+            bindings[i].stageFlags = static_cast<VkShaderStageFlags>(element.stages);
 
             switch (element.type) {
             case DescriptorDataType::eSamplerTexture:
@@ -372,6 +374,7 @@ public:
                     // PerFrameTexturePool
                     TextureDescriptorHelper::DescriptorDescription{
                         .type = TextureDescriptorHelper::DescriptorDataType::eSamplerTexture,
+                        .stages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                         .num_bindings = kNumTexturePoolSize,
                     },
                 },
@@ -1152,6 +1155,20 @@ auto Renderer::frame() -> util::Result {
 
     for (uint32_t i = 0; i < draw_queue_fill_; ++i) {
         scene_buffer_data.static_objects[i].world = draw_queue_[i]->world_matrix;
+
+        if (draw_queue_[i]->diffuse_map.has_value()) {
+            scene_buffer_data.static_objects[i].diffuse_map =
+                static_cast<int32_t>(draw_queue_[i]->diffuse_map.value().index());
+        } else {
+            scene_buffer_data.static_objects[i].diffuse_map = -1;
+        }
+
+        if (draw_queue_[i]->normal_map.has_value()) {
+            scene_buffer_data.static_objects[i].normal_map =
+                static_cast<int32_t>(draw_queue_[i]->normal_map.value().index());
+        } else {
+            scene_buffer_data.static_objects[i].normal_map = -1;
+        }
     }
 
     auto command_buffer = current_frame.command_buffer;

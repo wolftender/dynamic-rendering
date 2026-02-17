@@ -12,6 +12,10 @@ struct cbFrameHeapBuffer {
 
     struct cbStaticObjectData {
         float4x4 world;
+        int32_t diffuse_map;
+        int32_t normal_map;
+        int32_t reserved0;
+        int32_t reserved1;
     };
 
     float4x4 projection;
@@ -65,4 +69,12 @@ VertexShaderOutput vsMain(VertexShaderInput input, uniform cbFrameHeapBuffer *fr
 }
 
 [shader("fragment")]
-float4 fsMain(VertexShaderOutput input) { return float4(input.normal, 1.0); }
+float4 fsMain(VertexShaderOutput input, uniform cbFrameHeapBuffer *frame_heap, uniform uint32_t object_id) {
+    int32_t diffuse_map = frame_heap.static_objects[object_id].diffuse_map;
+
+    if (diffuse_map >= 0) {
+        return float4(textures[diffuse_map].Sample(input.uv).rgb, 1.0);
+    } else {
+        return float4(input.normal, 1.0);
+    }
+}

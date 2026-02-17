@@ -155,6 +155,9 @@ public:
     struct OpaqueDrawDescription {
         MeshId mesh;
         glm::fmat4x4 world_matrix;
+
+        std::optional<TextureId> diffuse_map;
+        std::optional<TextureId> normal_map;
     };
 
     struct StaticVertex {
@@ -197,6 +200,10 @@ public:
 
         struct cbStaticObjectData {
             glm::fmat4x4 world;
+            int32_t diffuse_map;
+            int32_t normal_map;
+            int32_t reserved0;
+            int32_t reserved1;
         };
 
         glm::fmat4x4 projection;

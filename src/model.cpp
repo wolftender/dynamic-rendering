@@ -262,11 +262,20 @@ auto Model::render(Renderer &renderer, const Pose &pose, const glm::fmat4x4 &wor
 
         for (const auto &mesh_id : node.meshes()) {
             const auto &mesh = meshes_[mesh_id.index()];
+            const auto &material = materials_[mesh.material().index()];
 
             Renderer::OpaqueDrawDescription desc = {
                 .mesh = mesh.handle().id(),
                 .world_matrix = matrix,
             };
+
+            if (material.diffuse().has_value()) {
+                desc.diffuse_map = textures_[material.diffuse()->index()].handle().id();
+            }
+
+            if (material.normal().has_value()) {
+                desc.normal_map = textures_[material.normal()->index()].handle().id();
+            }
 
             renderer.drawOpaqueMesh(std::move(desc));
         }
