@@ -13,12 +13,12 @@ class Model final {
     struct TextureTag {};
     struct MaterialTag {};
 
-    template <typename T> static auto getResource(Renderer *renderer, Renderer::ResourceId<T> handle) -> const T *;
-    template <typename T> static auto deleteResource(Renderer *renderer, Renderer::ResourceId<T> handle) -> void;
+    template <typename T> static auto getResource(Renderer *renderer, T handle) -> const T::Resource *;
+    template <typename T> static auto deleteResource(Renderer *renderer, T handle) -> void;
 
     template <typename T> class RendererResource final {
     public:
-        RendererResource(Renderer *renderer, Renderer::ResourceId<T> handle) : renderer_{renderer}, handle_{handle} {}
+        RendererResource(Renderer *renderer, T handle) : renderer_{renderer}, handle_{handle} {}
         ~RendererResource() noexcept {
             if (handle_.has_value() && renderer_) {
                 Model::deleteResource(renderer_, handle_.value());
@@ -56,11 +56,11 @@ class Model final {
             return nullptr;
         }
 
-        auto id() const -> Renderer::ResourceId<T> { return handle_.value(); }
+        auto id() const -> T { return handle_.value(); }
 
     private:
         Renderer *renderer_ = nullptr;
-        std::optional<Renderer::ResourceId<T>> handle_;
+        std::optional<T> handle_;
     };
 
 public:
@@ -96,13 +96,14 @@ public:
         auto operator=(Texture &&t) noexcept -> Texture & = default;
 
         auto model() const -> const Model & { return *model_; }
-        auto handle() const -> const RendererResource<Renderer::Texture> & { return handle_; }
+        auto handle() const -> const RendererResource<Renderer::TextureId> & { return handle_; }
 
     private:
-        Texture(Model *model, RendererResource<Renderer::Texture> handle) : model_{model}, handle_{std::move(handle)} {}
+        Texture(Model *model, RendererResource<Renderer::TextureId> handle)
+            : model_{model}, handle_{std::move(handle)} {}
 
         Model *model_ = nullptr;
-        RendererResource<Renderer::Texture> handle_;
+        RendererResource<Renderer::TextureId> handle_;
 
         friend class Model;
     };
@@ -118,15 +119,15 @@ public:
         auto operator=(Mesh &&t) noexcept -> Mesh & = default;
 
         auto model() const -> const Model & { return *model_; }
-        auto handle() const -> const RendererResource<Renderer::Mesh> & { return handle_; }
+        auto handle() const -> const RendererResource<Renderer::MeshId> & { return handle_; }
         auto material() const -> MaterialId { return material_; }
 
     private:
-        Mesh(Model *model, RendererResource<Renderer::Mesh> handle, MaterialId material)
+        Mesh(Model *model, RendererResource<Renderer::MeshId> handle, MaterialId material)
             : model_{model}, handle_{std::move(handle)}, material_{material} {}
 
         Model *model_ = nullptr;
-        RendererResource<Renderer::Mesh> handle_;
+        RendererResource<Renderer::MeshId> handle_;
         MaterialId material_;
 
         friend class Model;

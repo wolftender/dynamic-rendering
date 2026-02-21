@@ -8,21 +8,21 @@
 namespace graphics {
 
 template <>
-auto Model::getResource<Renderer::Texture>(Renderer *renderer, Renderer::TextureId handle)
+auto Model::getResource<Renderer::TextureId>(Renderer *renderer, Renderer::TextureId handle)
     -> const Renderer::Texture * {
     return renderer->getTexture(handle);
 }
 
 template <>
-auto Model::getResource<Renderer::Mesh>(Renderer *renderer, Renderer::MeshId handle) -> const Renderer::Mesh * {
+auto Model::getResource<Renderer::MeshId>(Renderer *renderer, Renderer::MeshId handle) -> const Renderer::Mesh * {
     return renderer->getMesh(handle);
 }
 
-template <> auto Model::deleteResource<Renderer::Texture>(Renderer *renderer, Renderer::TextureId handle) -> void {
+template <> auto Model::deleteResource<Renderer::TextureId>(Renderer *renderer, Renderer::TextureId handle) -> void {
     renderer->deleteTexture(handle);
 }
 
-template <> auto Model::deleteResource<Renderer::Mesh>(Renderer *renderer, Renderer::MeshId handle) -> void {
+template <> auto Model::deleteResource<Renderer::MeshId>(Renderer *renderer, Renderer::MeshId handle) -> void {
     renderer->deleteMesh(handle);
 }
 
@@ -141,7 +141,7 @@ auto Model::addMeshImpl(
         return std::nullopt;
     }
 
-    meshes_.emplace_back(Mesh{this, RendererResource<Renderer::Mesh>{renderer_, mesh_rc.value()}, material});
+    meshes_.emplace_back(Mesh{this, RendererResource<Renderer::MeshId>{renderer_, mesh_rc.value()}, material});
     return MeshId{static_cast<uint32_t>(meshes_.size() - 1)};
 }
 
@@ -159,7 +159,7 @@ auto Model::addRgbaTextureImpl(uint32_t width, uint32_t height, std::span<const 
         return std::nullopt;
     }
 
-    textures_.emplace_back(Texture{this, RendererResource<Renderer::Texture>{renderer_, texture_rc.value()}});
+    textures_.emplace_back(Texture{this, RendererResource<Renderer::TextureId>{renderer_, texture_rc.value()}});
     return TextureId{static_cast<uint32_t>(textures_.size() - 1)};
 }
 

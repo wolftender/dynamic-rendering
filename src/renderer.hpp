@@ -106,6 +106,71 @@ private:
 };
 
 class Renderer final {
+private:
+    struct MeshTag {};
+    struct TextureTag {};
+    struct AnimatedMeshTag {};
+    struct ActorMeshTag {};
+
+    class BufferHelper {
+    public:
+        BufferHelper(Renderer *renderer, size_t size);
+        virtual ~BufferHelper() noexcept;
+
+        BufferHelper(const BufferHelper &) = delete;
+        auto operator=(const BufferHelper &) = delete;
+
+        BufferHelper(BufferHelper &&b) noexcept;
+        auto operator=(BufferHelper &&b) noexcept -> BufferHelper &;
+
+        auto size() const -> size_t { return size_; }
+        auto stagingBuffer() const -> const Buffer & { return staging_buffer_; }
+        auto deviceBuffer() const -> const Buffer & { return device_buffer_; }
+        auto deviceAddress() const -> VkDeviceAddress { return device_address_; }
+        auto cpuMappedPointer() const -> void * { return staging_buffer_.cpuMappedPointer(); }
+
+        auto upload(VkCommandBuffer command_buffer, std::span<const uint8_t> data) -> void;
+
+    private:
+        Renderer *renderer_ = nullptr;
+        Context *context_ = nullptr;
+
+        size_t size_ = 0ull;
+
+        Buffer staging_buffer_ = {};
+        Buffer device_buffer_ = {};
+        VkDeviceAddress device_address_ = {};
+    };
+
+    template <typename cbBufferDataType> class TypedBufferHelper : public BufferHelper {
+    public:
+        static constexpr auto kDataSize = sizeof(cbBufferDataType);
+        static auto create(Renderer *renderer) -> std::unique_ptr<TypedBufferHelper> {
+            return std::make_unique<TypedBufferHelper<cbBufferDataType>>(renderer);
+        }
+
+        TypedBufferHelper(Renderer *renderer) : BufferHelper{renderer, kDataSize} {}
+
+        auto storage() -> cbBufferDataType & { return data_; }
+        auto storage() const -> const cbBufferDataType & { return data_; }
+
+        auto upload(VkCommandBuffer command_buffer) -> void {
+            BufferHelper::upload(command_buffer, {reinterpret_cast<const uint8_t *>(data_), kDataSize});
+        }
+
+    private:
+        cbBufferDataType data_ = {};
+    };
+
+    template <typename T, typename Tag, uint32_t kPoolSize> class ResourcePool;
+    class BindlessTexturePool;
+
+    // simple helper class to help us with our descriptor pools
+    // it is bound to the descriptor set layout, so it only holds
+    // enough descriptors for N layouts, where N is the number of
+    // frames in flight
+    template <uint32_t kNumSets = 1ull> class DescriptorSetHelper;
+
 public:
     static constexpr uint32_t kNumFramesInFlight = 2;
     static constexpr uint32_t kNumMaxPointLights = 20;
@@ -114,9 +179,69 @@ public:
     static constexpr uint32_t kNumMaxBonesPerObject = 200;
     static constexpr uint32_t kNumTexturePoolSize = 256;
     static constexpr uint32_t kNumMeshPoolSize = 512;
+    static constexpr uint32_t kNumAnimMeshPoolSize = 128;
+
+    struct cbFrameHeapBuffer {
+        struct cbPointLightData {
+            glm::fvec4 world_position;
+            glm::fvec4 color_intensity;
+        };
+
+        struct cbStaticObjectData {
+            glm::fmat4x4 world;
+            int32_t diffuse_map;
+            int32_t normal_map;
+            int32_t reserved0;
+            int32_t reserved1;
+        };
+
+        glm::fmat4x4 projection;
+        glm::fmat4x4 view;
+
+        glm::fmat4x4 projection_inv;
+        glm::fmat4x4 view_inv;
+
+        glm::fvec4 ambient;
+
+        std::array<cbPointLightData, kNumMaxPointLights> point_lights;
+        std::array<cbStaticObjectData, kNumMaxStaticObjects> static_objects;
+
+        uint32_t num_lights, num_static_objects;
+    };
+
+    struct cbSkinningBuffer {
+        glm::fmat4x4 bones[kNumMaxBonesPerObject];
+    };
 
     class Mesh;
     class Texture;
+    class ActorMesh;
+
+    template <typename cbBufferDataType> class DataBuffer final {
+    public:
+        DataBuffer(Renderer *renderer) : buffers_{makeBufferArray(renderer)} {}
+
+        auto storage() -> cbBufferDataType & { return storage_; }
+        auto storage() const -> const cbBufferDataType & { return storage_; }
+
+        auto upload(VkCommandBuffer command_buffer, uint32_t frame) -> void {
+            buffers_[frame].upload(
+                command_buffer, {reinterpret_cast<const uint8_t *>(storage_), sizeof(cbBufferDataType)});
+        }
+
+    private:
+        static auto makeBufferArray(Renderer *renderer) -> std::array<BufferHelper, kNumFramesInFlight> {
+            return [&]<size_t... I>(std::index_sequence<I...>) {
+                return std::array<BufferHelper, kNumFramesInFlight>{
+                    (void(I), BufferHelper{renderer, sizeof(cbBufferDataType)})...};
+            }(std::make_index_sequence<kNumFramesInFlight>{});
+        }
+
+        Renderer *renderer_ = nullptr;
+
+        cbBufferDataType storage_;
+        std::array<BufferHelper, kNumFramesInFlight> buffers_;
+    };
 
     class IShaderLoader {
     public:
@@ -132,8 +257,10 @@ public:
         auto operator=(IShaderLoader &&) noexcept = delete;
     };
 
-    template <typename T> class ResourceId final {
+    template <typename T, typename Tag> class ResourceId final {
     public:
+        using Resource = T;
+
         ResourceId(uint32_t index, uint32_t generation) : index_{index}, generation_{generation} {}
 
         auto index() const -> uint32_t { return index_; }
@@ -144,8 +271,10 @@ public:
         uint32_t generation_;
     };
 
-    using MeshId = ResourceId<Mesh>;
-    using TextureId = ResourceId<Texture>;
+    using MeshId = ResourceId<Mesh, MeshTag>;
+    using TextureId = ResourceId<Texture, TextureTag>;
+    using AnimatedMeshId = ResourceId<Mesh, AnimatedMeshTag>;
+    using ActorMeshId = ResourceId<ActorMesh, ActorMeshTag>;
 
     struct Description {
         Context *context;
@@ -154,6 +283,15 @@ public:
 
     struct OpaqueDrawDescription {
         MeshId mesh;
+        glm::fmat4x4 world_matrix;
+
+        std::optional<TextureId> diffuse_map;
+        std::optional<TextureId> normal_map;
+    };
+
+    struct SkinnedDrawDescription {
+        ActorMeshId skinned_mesh;
+
         glm::fmat4x4 world_matrix;
 
         std::optional<TextureId> diffuse_map;
@@ -188,36 +326,25 @@ public:
             : position{x, y, z}, normal{nx, ny, nz}, uv{u, v}, color{r, g, b}, tangent{tx, ty, tz, tw} {}
     };
 
-    enum PerFrameDescriptors : uint32_t {
-        PerFrameTexturePool = 0,
+    struct SkinnedVertex {
+        glm::fvec3 position;
+        glm::fvec3 normal;
+        glm::fvec2 uv;
+        glm::fvec3 color;
+        glm::fvec4 tangent;
+        glm::uvec4 bones;
+        glm::fvec4 weights;
+
+        SkinnedVertex() = default;
+
+        SkinnedVertex(
+            const glm::fvec3 &pos, const glm::fvec3 &norm, const glm::fvec2 &uv_coords, const glm::fvec3 &col,
+            const glm::fvec4 &tan, const glm::uvec4 &bones, const glm::fvec4 &weights)
+            : position{pos}, normal{norm}, uv{uv_coords}, color{col}, tangent{tan}, bones{bones}, weights{weights} {}
     };
 
-    struct cbFrameHeapBuffer {
-        struct cbPointLightData {
-            glm::fvec4 world_position;
-            glm::fvec4 color_intensity;
-        };
-
-        struct cbStaticObjectData {
-            glm::fmat4x4 world;
-            int32_t diffuse_map;
-            int32_t normal_map;
-            int32_t reserved0;
-            int32_t reserved1;
-        };
-
-        glm::fmat4x4 projection;
-        glm::fmat4x4 view;
-
-        glm::fmat4x4 projection_inv;
-        glm::fmat4x4 view_inv;
-
-        glm::fvec4 ambient;
-
-        std::array<cbPointLightData, kNumMaxPointLights> point_lights;
-        std::array<cbStaticObjectData, kNumMaxStaticObjects> static_objects;
-
-        uint32_t num_lights, num_static_objects;
+    enum PerFrameDescriptors : uint32_t {
+        PerFrameTexturePool = 0,
     };
 
     class Mesh final {
@@ -306,6 +433,36 @@ public:
         friend class Renderer;
     };
 
+    class ActorMesh final {
+    public:
+        ~ActorMesh() noexcept;
+
+        ActorMesh(const ActorMesh &) = delete;
+        auto operator=(const ActorMesh &) = delete;
+
+        ActorMesh(ActorMesh &&) noexcept;
+        auto operator=(ActorMesh &&) noexcept -> ActorMesh &;
+
+        auto inputMesh() const -> AnimatedMeshId { return input_mesh_.value(); }
+        auto riggedMesh() const -> MeshId { return rigged_mesh_.value(); }
+        auto transformBuffer() const -> const DataBuffer<cbSkinningBuffer> & { return buffer_; }
+
+    private:
+        static auto create(Renderer *renderer, AnimatedMeshId mesh) -> std::optional<ActorMesh>;
+
+        ActorMesh(
+            Renderer *renderer, AnimatedMeshId input_mesh, MeshId rigged_mesh, DataBuffer<cbSkinningBuffer> &&buffer)
+            : renderer_{renderer}, input_mesh_{input_mesh}, rigged_mesh_{rigged_mesh}, buffer_{std::move(buffer)} {};
+
+        Renderer *renderer_ = nullptr;
+
+        std::optional<AnimatedMeshId> input_mesh_;
+        std::optional<MeshId> rigged_mesh_;
+        DataBuffer<cbSkinningBuffer> buffer_;
+
+        friend class Renderer;
+    };
+
     static auto create(const Description &description) -> std::unique_ptr<Renderer>;
 
     ~Renderer() noexcept;
@@ -358,6 +515,31 @@ public:
         return addTexture(std::move(texture.value()));
     }
 
+    template <util::TypedContiguousRange<StaticVertex> VR, util::TypedContiguousRange<const uint32_t> IR>
+    auto createAnimatedMesh(const VR &vertex_input_range, const IR &index_input_range) -> std::optional<MeshId> {
+        const auto vertex_buffer_ptr = reinterpret_cast<const uint8_t *>(std::ranges::data(vertex_input_range));
+        const auto vertex_buffer_size = std::ranges::size(vertex_input_range) * sizeof(StaticVertex);
+
+        auto mesh = Mesh::create(
+            this, {vertex_buffer_ptr, vertex_buffer_size}, std::ranges::size(vertex_input_range), index_input_range);
+
+        if (!mesh.has_value()) {
+            return std::nullopt;
+        }
+
+        return addMesh(std::move(mesh.value()));
+    }
+
+    auto createActorMesh(AnimatedMeshId mesh) -> std::optional<ActorMeshId> {
+        auto actor_mesh = ActorMesh::create(this, mesh);
+
+        if (!actor_mesh.has_value()) {
+            return std::nullopt;
+        }
+
+        return addActorMesh(std::move(actor_mesh.value()));
+    }
+
     template <std::invocable<const Texture &> F> auto withTexture(TextureId handle, F consumer) const {
         auto texture = getTexture(handle);
         if (!texture) {
@@ -378,8 +560,13 @@ public:
 
     auto deleteMesh(MeshId handle) { unrefMesh(handle); }
     auto deleteTexture(TextureId handle) { unrefTexture(handle); }
+    auto deleteAnimMesh(AnimatedMeshId handle) { unrefAnimMesh(handle); }
+    auto deleteActorMesh(ActorMeshId handle) { unrefActorMesh(handle); }
+
     auto getMesh(const MeshId &id) const -> const Mesh *;
     auto getTexture(const TextureId &id) const -> const Texture *;
+    auto getAnimMesh(const AnimatedMeshId &id) const -> const Mesh *;
+    auto getActorMesh(const ActorMeshId &id) const -> const ActorMesh *;
 
     auto frame() -> util::Result;
 
@@ -393,15 +580,6 @@ public:
     }
 
 private:
-    template <typename T, uint32_t kPoolSize> class ResourcePool;
-    class BindlessTexturePool;
-
-    // simple helper class to help us with our descriptor pools
-    // it is bound to the descriptor set layout, so it only holds
-    // enough descriptors for N layouts, where N is the number of
-    // frames in flight
-    template <uint32_t kNumSets = 1ull> class DescriptorSetHelper;
-
     class OpaqueGeometryPass final {
     public:
         struct cbPushConstantBuffer {
@@ -434,10 +612,8 @@ private:
         VkPipeline pipeline_ = VK_NULL_HANDLE;
     };
 
-    template <typename cbBufferDataType> class SceneBufferHelper;
-
     struct FrameData {
-        std::unique_ptr<SceneBufferHelper<cbFrameHeapBuffer>> scene_buffer;
+        std::unique_ptr<TypedBufferHelper<cbFrameHeapBuffer>> scene_buffer;
         VkCommandBuffer command_buffer = VK_NULL_HANDLE;
 
         VkFence fence = VK_NULL_HANDLE;
@@ -446,8 +622,13 @@ private:
 
     auto addMesh(Mesh &&mesh) -> std::optional<MeshId>;
     auto addTexture(Texture &&texture) -> std::optional<TextureId>;
+    auto addAnimMesh(Mesh &&mesh) -> std::optional<AnimatedMeshId>;
+    auto addActorMesh(ActorMesh &&mesh) -> std::optional<ActorMeshId>;
+
     auto unrefMesh(const MeshId &id) -> void;
     auto unrefTexture(const TextureId &id) -> void;
+    auto unrefAnimMesh(const AnimatedMeshId &id) -> void;
+    auto unrefActorMesh(const ActorMeshId &id) -> void;
 
     auto createSwapchainData() -> void;
     auto getCurrentFrame() -> FrameData & { return frames_[current_frame_]; }
@@ -478,7 +659,9 @@ private:
 
     // resource pools
     std::unique_ptr<BindlessTexturePool> texture_pool_;
-    std::unique_ptr<ResourcePool<Mesh, kNumMeshPoolSize>> mesh_pool_;
+    std::unique_ptr<ResourcePool<Mesh, MeshTag, kNumMeshPoolSize>> mesh_pool_;
+    std::unique_ptr<ResourcePool<Mesh, AnimatedMeshTag, kNumAnimMeshPoolSize>> anim_mesh_pool_;
+    std::unique_ptr<ResourcePool<ActorMesh, ActorMeshTag, kNumMaxSkinnedObjects>> actor_mesh_pool_;
 
     // render passes
     // std::unique_ptr<DescriptorSetHelper> descriptor_helper_ = nullptr;

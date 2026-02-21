@@ -455,15 +455,17 @@ auto getCompatibleDevices(VkInstance instance, VkSurfaceKHR surface)
 
         for (uint32_t index = 0; index < num_queue_families; ++index) {
             VkBool32 is_graphics = (queue_family_properties[index].queueFlags & VK_QUEUE_GRAPHICS_BIT);
+            VkBool32 is_compute = (queue_family_properties[index].queueFlags & VK_QUEUE_COMPUTE_BIT);
+            VkBool32 is_graphics_compute = is_graphics && is_compute;
             VkBool32 is_present = VK_FALSE;
 
             VK_CHECK_ERROR(vkGetPhysicalDeviceSurfaceSupportKHR(physical_device, index, surface, &is_present));
 
-            if (is_graphics && is_present) {
+            if (is_graphics_compute && is_present) {
                 graphics_family = index;
                 present_family = index;
                 break;
-            } else if (is_graphics && !graphics_family.has_value()) {
+            } else if (is_graphics_compute && !graphics_family.has_value()) {
                 graphics_family = index;
             } else if (is_present && !present_family.has_value()) {
                 present_family = index;
