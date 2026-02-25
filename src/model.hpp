@@ -12,6 +12,8 @@ class Model final {
     struct NodeTag {};
     struct TextureTag {};
     struct MaterialTag {};
+    struct SkinTag {};
+    struct AnimatedMeshTag {};
 
     template <typename T> static auto getResource(Renderer *renderer, T handle) -> const T::Resource *;
     template <typename T> static auto deleteResource(Renderer *renderer, T handle) -> void;
@@ -84,6 +86,8 @@ public:
     using NodeId = Id<NodeTag>;
     using TextureId = Id<TextureTag>;
     using MaterialId = Id<MaterialTag>;
+    using SkinId = Id<SkinTag>;
+    using AnimatedMeshId = Id<AnimatedMeshTag>;
 
     class Texture final {
     public:
@@ -133,6 +137,56 @@ public:
         friend class Model;
     };
 
+    class Skin final {
+    public:
+        struct SkinNode {
+            NodeId node;
+            glm::fmat4x4 inverse_bind;
+        };
+
+        Skin() = default;
+
+        template <util::TypedContiguousRange<SkinNode> R>
+        Skin(R &nodes) : nodes_{std::ranges::begin(nodes), std::ranges::end(nodes)} {}
+
+        auto addNodeRef(NodeId node, const glm::fmat4x4 &inverse_bind) -> void {
+            nodes_.push_back({node, inverse_bind});
+        }
+
+        auto addNodeRef(SkinNode node) -> void { nodes_.emplace_back(node); }
+        auto nodes() const -> const std::vector<SkinNode> & { return nodes_; }
+
+    private:
+        std::vector<SkinNode> nodes_;
+    };
+
+    class AnimatedMesh final {
+    public:
+        ~AnimatedMesh() noexcept = default;
+
+        AnimatedMesh(const AnimatedMesh &) = delete;
+        auto operator=(const AnimatedMesh &) = delete;
+
+        AnimatedMesh(AnimatedMesh &&t) noexcept = default;
+        auto operator=(AnimatedMesh &&t) noexcept -> AnimatedMesh & = default;
+
+        auto model() const -> const Model & { return *model_; }
+        auto handle() const -> const RendererResource<Renderer::AnimatedMeshId> & { return handle_; }
+        auto material() const -> MaterialId { return material_; }
+        auto skin() const -> SkinId { return skin_; }
+
+    private:
+        AnimatedMesh(Model *model, RendererResource<Renderer::AnimatedMeshId> handle, MaterialId material, SkinId skin)
+            : model_{model}, handle_{std::move(handle)}, material_{material}, skin_{std::move(skin)} {}
+
+        Model *model_ = nullptr;
+        RendererResource<Renderer::AnimatedMeshId> handle_;
+        MaterialId material_;
+        SkinId skin_;
+
+        friend class Model;
+    };
+
     class Node final {
     public:
         Node(const Node &) = delete;
@@ -149,12 +203,14 @@ public:
         auto rotation() const -> const glm::fquat & { return rotation_; }
         auto children() const -> const std::vector<NodeId> & { return children_; }
         auto meshes() const -> const std::vector<MeshId> & { return meshes_; }
+        auto animatedMeshes() const -> const std::vector<AnimatedMeshId> & { return animated_meshes_; }
 
         auto setTranslation(const glm::fvec3 &translation) -> void { translation_ = translation; }
         auto setScale(const glm::fvec3 &scale) -> void { scale_ = scale; }
         auto setRotation(const glm::fquat &rotation) -> void { rotation_ = rotation; }
 
         auto addMesh(MeshId id) -> void;
+        auto addAnimMesh(AnimatedMeshId id) -> void;
 
     private:
         Node(
@@ -171,6 +227,7 @@ public:
         glm::fvec3 scale_;
         glm::fquat rotation_;
         std::vector<MeshId> meshes_;
+        std::vector<AnimatedMeshId> animated_meshes_;
         std::vector<NodeId> children_;
 
         friend class Model;
@@ -254,12 +311,15 @@ public:
             friend class Pose;
         };
 
+        ~Pose() noexcept;
+
         Pose(const Pose &) = delete;
         auto operator=(const Pose &) = delete;
 
         Pose(Pose &&) noexcept = delete;
         auto operator=(Pose &&) noexcept -> Pose & = delete;
 
+        auto updateBuffers() const -> void;
         auto root() const -> NodeId { return NodeId{0ul}; }
         auto getNode(NodeId handle) -> Node *;
         auto getNode(NodeId handle) const -> const Node *;
@@ -289,12 +349,18 @@ public:
 
     private:
         static auto fromModel(const Model &model) -> std::unique_ptr<Pose>;
+
         Pose() = default;
 
         auto recomputeTransformSubtree(NodeId root) -> void;
 
+        Renderer *renderer_ = nullptr;
+
         std::vector<Node> nodes_;
+        std::vector<Renderer::ActorMeshId> actor_meshes_;
+
         friend class Model;
+        friend class Controller;
     };
 
     Model(Renderer *renderer);
@@ -323,6 +389,18 @@ public:
         return addMeshImpl({vtx_ptr, vtx_len}, {idx_ptr, idx_len}, material);
     }
 
+    template <util::TypedContiguousRange<Renderer::SkinnedVertex> VR, util::TypedContiguousRange<const uint32_t> IR>
+    auto addAnimatedMesh(const VR &vertices, const IR &indices, MaterialId material, SkinId skin)
+        -> std::optional<AnimatedMeshId> {
+        const auto vtx_ptr = std::ranges::data(vertices);
+        const auto idx_ptr = std::ranges::data(indices);
+
+        const auto vtx_len = std::ranges::size(vertices);
+        const auto idx_len = std::ranges::size(indices);
+
+        return addAnimMeshImpl({vtx_ptr, vtx_len}, {idx_ptr, idx_len}, material, skin);
+    }
+
     template <util::TypedContiguousRange<const uint8_t> R>
     auto addRgbaTexture(uint32_t width, uint32_t height, const R &range) -> std::optional<TextureId> {
         const auto data_ptr = std::ranges::data(range);
@@ -330,6 +408,8 @@ public:
 
         return addRgbaTextureImpl(width, height, {data_ptr, data_len});
     }
+
+    auto addSkin(Skin &&skin) -> std::optional<SkinId>;
 
     auto addMaterial(const Material::Description &desc) -> std::optional<MaterialId>;
     auto addNode(NodeId parent, std::string_view name) -> std::optional<NodeId>;
@@ -414,6 +494,9 @@ private:
     auto addMeshImpl(
         std::span<const Renderer::StaticVertex> vertices, std::span<const uint32_t> indices, MaterialId material)
         -> std::optional<MeshId>;
+    auto addAnimMeshImpl(
+        std::span<const Renderer::SkinnedVertex> vertices, std::span<const uint32_t> indices, MaterialId material,
+        SkinId skin) -> std::optional<AnimatedMeshId>;
     auto addRgbaTextureImpl(uint32_t width, uint32_t height, std::span<const uint8_t> data) -> std::optional<TextureId>;
 
     Renderer *renderer_;
@@ -422,9 +505,33 @@ private:
     std::vector<Node> nodes_;
     std::vector<Texture> textures_;
     std::vector<Material> materials_;
+    std::vector<Skin> skins_;
+    std::vector<AnimatedMesh> animated_meshes_;
     std::vector<NodeId> mesh_nodes_;
 
     friend class Node;
+};
+
+class Actor final {
+public:
+    Actor(Renderer *renderer, Model *model);
+    ~Actor() noexcept;
+
+    Actor(const Actor &) = delete;
+    auto operator=(const Actor &) = delete;
+
+    Actor(Actor &&a) noexcept;
+    auto operator=(Actor &&a) noexcept -> Actor &;
+
+    auto renderer() const -> const Renderer &;
+    auto model() const -> const Model &;
+
+private:
+    Renderer *renderer_ = nullptr;
+    Model *model_ = nullptr;
+
+    Renderer::AnimatedMeshId mesh_;
+    Renderer::ActorMeshId actor_;
 };
 
 } // namespace graphics

@@ -634,24 +634,23 @@ auto Renderer::Mesh::operator=(Mesh &&m) noexcept -> Mesh & {
     return *this;
 }
 
-auto Renderer::Mesh::create(
-    Renderer *renderer, std::span<const uint8_t> vertex_buffer, uint32_t num_vertices,
-    std::span<const uint32_t> indices) -> std::optional<Mesh> {
+auto Renderer::Mesh::create(Renderer *renderer, const Description &desc) -> std::optional<Mesh> {
     Mesh mesh;
 
     mesh.renderer_ = renderer;
     const auto &memory = mesh.renderer_->context_->memory();
 
-    mesh.num_vertices_ = num_vertices;
-    mesh.num_indices_ = std::size(indices);
+    mesh.num_vertices_ = desc.num_vertices;
+    mesh.num_indices_ = std::size(desc.indices);
 
-    mesh.vertex_buffer_size_ = vertex_buffer.size();
-    mesh.index_buffer_size_ = indices.size() * sizeof(uint32_t);
+    mesh.vertex_buffer_size_ = desc.vertex_buffer.size();
+    mesh.index_buffer_size_ = desc.indices.size() * sizeof(uint32_t);
 
-    mesh.vertex_buffer_ = memory.createBuffer(VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, vertex_buffer);
+    mesh.vertex_buffer_ =
+        memory.createBuffer(VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | desc.vertex_buffer_flags, desc.vertex_buffer);
     mesh.index_bufer_ = memory.createBuffer(
-        VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
-        std::span<const uint8_t>{reinterpret_cast<const uint8_t *>(indices.data()), mesh.index_buffer_size_});
+        VK_BUFFER_USAGE_INDEX_BUFFER_BIT | desc.index_buffer_flags,
+        std::span<const uint8_t>{reinterpret_cast<const uint8_t *>(desc.indices.data()), mesh.index_buffer_size_});
 
     return std::move(mesh);
 }
@@ -740,41 +739,19 @@ Renderer::Texture::~Texture() noexcept {
     }
 }
 
-Renderer::ActorMesh::ActorMesh(ActorMesh &&m) noexcept : buffer_{std::move(m.buffer_)} {
-    input_mesh_ = std::move(m.input_mesh_);
-    rigged_mesh_ = std::move(m.rigged_mesh_);
-    renderer_ = m.renderer_;
-
-    m.input_mesh_ = std::nullopt;
-    m.rigged_mesh_ = std::nullopt;
-    m.renderer_ = nullptr;
-}
-
-auto Renderer::ActorMesh::operator=(ActorMesh &&m) noexcept -> ActorMesh & {
-    if (this != &m) {
-        buffer_ = std::move(m.buffer_);
-
-        input_mesh_ = std::move(m.input_mesh_);
-        rigged_mesh_ = std::move(m.rigged_mesh_);
-        renderer_ = m.renderer_;
-
-        m.input_mesh_ = std::nullopt;
-        m.rigged_mesh_ = std::nullopt;
-        m.renderer_ = nullptr;
-    }
-
-    return *this;
-}
-
-Renderer::ActorMesh::~ActorMesh() noexcept {
-    if (renderer_ && rigged_mesh_.has_value()) {
-        renderer_->deleteMesh(rigged_mesh_.value());
-        rigged_mesh_ = std::nullopt;
-    }
-}
-
 auto Renderer::ActorMesh::create(Renderer *renderer, AnimatedMeshId mesh) -> std::optional<ActorMesh> {
-    // TODO
+    const auto *base_mesh = renderer->getAnimMesh(mesh);
+    if (!base_mesh) {
+        return std::nullopt;
+    }
+
+    ActorMesh actor{renderer, mesh, DataBuffer<cbSkinningBuffer>{renderer}};
+    actor.num_vertices_ = base_mesh->numVertices();
+    actor.output_buffer_size_ = actor.num_vertices_ * sizeof(StaticVertex);
+    actor.output_buffer_ = actor.renderer_->context_->memory().createDeviceBuffer(
+        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, actor.output_buffer_size_);
+
+    return actor;
 }
 
 auto Renderer::create(const Description &description) -> std::unique_ptr<Renderer> {
@@ -785,8 +762,10 @@ auto Renderer::create(const Description &description) -> std::unique_ptr<Rendere
     }
 
     renderer->context_ = description.context;
-    renderer->mesh_pool_ = std::make_unique<ResourcePool<Mesh, MeshTag, kNumMeshPoolSize>>();
     renderer->texture_pool_ = BindlessTexturePool::create(renderer.get());
+    renderer->mesh_pool_ = std::make_unique<ResourcePool<Mesh, MeshTag, kNumMeshPoolSize>>();
+    renderer->anim_mesh_pool_ = std::make_unique<ResourcePool<Mesh, AnimatedMeshTag, kNumAnimMeshPoolSize>>();
+    renderer->actor_mesh_pool_ = std::make_unique<ResourcePool<ActorMesh, ActorMeshTag, kNumMaxSkinnedObjects>>();
     renderer->createSwapchainData();
 
     for (size_t i = 0; i < kNumFramesInFlight; ++i) {

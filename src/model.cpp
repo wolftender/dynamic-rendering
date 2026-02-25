@@ -18,6 +18,12 @@ auto Model::getResource<Renderer::MeshId>(Renderer *renderer, Renderer::MeshId h
     return renderer->getMesh(handle);
 }
 
+template <>
+auto Model::getResource<Renderer::AnimatedMeshId>(Renderer *renderer, Renderer::AnimatedMeshId handle)
+    -> const Renderer::Mesh * {
+    return renderer->getAnimMesh(handle);
+}
+
 template <> auto Model::deleteResource<Renderer::TextureId>(Renderer *renderer, Renderer::TextureId handle) -> void {
     renderer->deleteTexture(handle);
 }
@@ -26,9 +32,23 @@ template <> auto Model::deleteResource<Renderer::MeshId>(Renderer *renderer, Ren
     renderer->deleteMesh(handle);
 }
 
+template <>
+auto Model::deleteResource<Renderer::AnimatedMeshId>(Renderer *renderer, Renderer::AnimatedMeshId handle) -> void {
+    renderer->deleteAnimMesh(handle);
+}
+
 auto Model::Node::addMesh(MeshId id) -> void {
-    const auto is_first_drawable = meshes_.size() == 0;
+    const auto is_first_drawable = (meshes_.size() == 0) || (animated_meshes_.size() == 0);
     meshes_.push_back(std::move(id));
+
+    if (is_first_drawable) {
+        model_->mesh_nodes_.push_back(self_);
+    }
+}
+
+auto Model::Node::addAnimMesh(AnimatedMeshId id) -> void {
+    const auto is_first_drawable = (meshes_.size() == 0) || (animated_meshes_.size() == 0);
+    animated_meshes_.push_back(std::move(id));
 
     if (is_first_drawable) {
         model_->mesh_nodes_.push_back(self_);
@@ -81,7 +101,9 @@ auto Model::Pose::fromModel(const Model &model) -> std::unique_ptr<Pose> {
         return nullptr;
     }
 
+    pose->renderer_ = model.renderer_;
     pose->nodes_.reserve(model.nodes_.size());
+
     for (const auto &node : model.nodes_) {
         Pose::Node pose_node{pose.get(), node.self()};
 
@@ -95,6 +117,17 @@ auto Model::Pose::fromModel(const Model &model) -> std::unique_ptr<Pose> {
     }
 
     pose->recomputeTransformSubtree(pose->root());
+
+    for (const auto &anim_mesh : model.animated_meshes_) {
+        const auto actor_mesh = pose->renderer_->createActorMesh(anim_mesh.handle().id());
+        if (!actor_mesh.has_value()) {
+            LogError("model: failed to allocate actor mesh");
+            return nullptr;
+        }
+
+        pose->actor_meshes_.push_back(actor_mesh.value());
+    }
+
     return pose;
 }
 
@@ -124,6 +157,18 @@ auto Model::Pose::recomputeTransformSubtree(NodeId root) -> void {
     }
 }
 
+Model::Pose::~Pose() noexcept {
+    if (renderer_) {
+        for (auto &actor_mesh : actor_meshes_) {
+            renderer_->deleteActorMesh(actor_mesh);
+        }
+    }
+}
+
+auto Model::Pose::updateBuffers() const -> void {
+    // TODO
+}
+
 Model::Model(Renderer *renderer) : renderer_{renderer} {
     nodes_.emplace_back(
         Node{
@@ -145,6 +190,20 @@ auto Model::addMeshImpl(
     return MeshId{static_cast<uint32_t>(meshes_.size() - 1)};
 }
 
+auto Model::addAnimMeshImpl(
+    std::span<const Renderer::SkinnedVertex> vertices, std::span<const uint32_t> indices, MaterialId material,
+    SkinId skin) -> std::optional<AnimatedMeshId> {
+    auto mesh_rc = renderer_->createAnimatedMesh(vertices, indices);
+    if (!mesh_rc.has_value()) {
+        return std::nullopt;
+    }
+
+    animated_meshes_.emplace_back(
+        AnimatedMesh{
+            this, RendererResource<Renderer::AnimatedMeshId>{renderer_, mesh_rc.value()}, material, std::move(skin)});
+    return AnimatedMeshId{static_cast<uint32_t>(animated_meshes_.size()) - 1};
+}
+
 auto Model::addRgbaTextureImpl(uint32_t width, uint32_t height, std::span<const uint8_t> data)
     -> std::optional<TextureId> {
     Renderer::Texture::Description desc = {
@@ -161,6 +220,11 @@ auto Model::addRgbaTextureImpl(uint32_t width, uint32_t height, std::span<const 
 
     textures_.emplace_back(Texture{this, RendererResource<Renderer::TextureId>{renderer_, texture_rc.value()}});
     return TextureId{static_cast<uint32_t>(textures_.size() - 1)};
+}
+
+auto Model::addSkin(Skin &&skin) -> std::optional<SkinId> {
+    skins_.emplace_back(std::move(skin));
+    return SkinId{static_cast<uint32_t>(skins_.size() - 1)};
 }
 
 auto Model::addMaterial(const Material::Description &desc) -> std::optional<MaterialId> {
@@ -291,18 +355,19 @@ auto Model::fromAct(Renderer *renderer, const act::Model &act_model) -> std::uni
     const auto num_nodes = act_model.nodes.size();
     const auto num_textures = act_model.textures.size();
     const auto num_materials = act_model.materials.size();
-    const auto num_meshes = act_model.meshes.size();
     const auto num_submeshes = act_model.submeshes.size();
+
+    using AnyMeshId = std::variant<MeshId, AnimatedMeshId, std::monostate>;
 
     std::vector<std::optional<NodeId>> node_map;
     std::vector<std::optional<TextureId>> texture_map;
     std::vector<std::optional<MaterialId>> material_map;
-    std::vector<std::optional<MeshId>> submesh_map;
+    std::vector<AnyMeshId> submesh_map;
 
     node_map.resize(num_nodes);
     texture_map.resize(num_textures);
     material_map.resize(num_materials);
-    submesh_map.resize(num_submeshes);
+    submesh_map.resize(num_submeshes, std::monostate{});
 
     for (uint32_t act_texture_id = 0; act_texture_id < num_textures; ++act_texture_id) {
         const auto &act_texture = act_model.textures[act_texture_id];
@@ -344,58 +409,13 @@ auto Model::fromAct(Renderer *renderer, const act::Model &act_model) -> std::uni
         material_map[act_material_id] = material_id;
     }
 
-    for (uint32_t act_mesh_id = 0; act_mesh_id < num_meshes; ++act_mesh_id) {
-        const auto &act_mesh = act_model.meshes[act_mesh_id];
-        for (const auto &act_submesh_id : act_mesh.submesh_ids) {
-            const auto &act_any_submesh = act_model.submeshes[act_submesh_id];
-            std::visit(
-                util::overload{
-                    [&](const act::Model::StaticSubmesh &act_submesh) {
-                std::vector<graphics::Renderer::StaticVertex> vertices{act_submesh.vertices.size()};
-                for (size_t i = 0; i < act_submesh.vertices.size(); ++i) {
-                    vertices[i].position = act_submesh.vertices[i].position;
-                    vertices[i].normal = act_submesh.vertices[i].normal;
-                    vertices[i].tangent = act_submesh.vertices[i].tangent;
-                    vertices[i].uv = act_submesh.vertices[i].texcoord;
-                }
-
-                auto material_id = material_map[act_submesh.material];
-                if (!material_id.has_value()) {
-                    LogError("model: invalid material for act submesh {}", act_submesh_id);
-                    return;
-                }
-
-                auto mesh_id = model->addMesh(vertices, act_submesh.indices, material_id.value());
-                submesh_map[act_submesh_id] = mesh_id;
-            },
-                    [&](const act::Model::RiggedSubmesh &act_submesh) {
-                std::vector<graphics::Renderer::StaticVertex> vertices{act_submesh.vertices.size()};
-                for (size_t i = 0; i < act_submesh.vertices.size(); ++i) {
-                    vertices[i].position = act_submesh.vertices[i].position;
-                    vertices[i].normal = act_submesh.vertices[i].normal;
-                    vertices[i].tangent = act_submesh.vertices[i].tangent;
-                    vertices[i].uv = act_submesh.vertices[i].texcoord;
-                }
-
-                auto material_id = material_map[act_submesh.material];
-                if (!material_id.has_value()) {
-                    LogError("model: invalid material for act submesh {}", act_submesh_id);
-                    return;
-                }
-
-                auto mesh_id = model->addMesh(vertices, act_submesh.indices, material_id.value());
-                submesh_map[act_submesh_id] = mesh_id;
-            },
-                },
-                act_any_submesh);
-        }
-    }
-
     // node initialization
     std::queue<uint32_t> node_queue;
     for (uint32_t id = 0; id < num_nodes; ++id) {
         node_queue.push(id);
     }
+
+    std::vector<int> nodes_with_meshes;
 
     for (uint32_t iter = 0; !node_queue.empty() && iter < num_nodes * num_nodes; ++iter) {
         auto act_node_id = node_queue.front();
@@ -428,20 +448,89 @@ auto Model::fromAct(Renderer *renderer, const act::Model &act_model) -> std::uni
         }
 
         if (act_node.mesh_id.has_value()) {
-            const auto &act_mesh = act_model.meshes[act_node.mesh_id.value()];
-            for (const auto &act_submesh_id : act_mesh.submesh_ids) {
-                auto mesh_id = submesh_map[act_submesh_id];
-                if (!mesh_id.has_value()) {
-                    continue;
-                }
-
-                node->addMesh(mesh_id.value());
-            }
+            nodes_with_meshes.push_back(act_node_id);
         }
     }
 
     if (!node_queue.empty()) {
         LogError("model: act model has invalid topology");
+    }
+
+    for (const auto act_node_id : nodes_with_meshes) {
+        const auto &act_node = act_model.nodes[act_node_id];
+        const auto &act_mesh = act_model.meshes[act_node.mesh_id.value()];
+
+        std::optional<SkinId> skin_id = [&]() -> std::optional<SkinId> {
+            if (!act_node.skin_id.has_value()) {
+                return std::nullopt;
+            }
+
+            const auto &act_skin = act_model.skins[act_node.skin_id.value()];
+
+            Skin skin;
+            for (const auto &act_skin_node_id : act_skin.skin_node_ids) {
+                const auto &act_skin_node = act_model.skin_nodes[act_skin_node_id];
+                if (!node_map[act_skin_node.node_id].has_value()) {
+                    return std::nullopt;
+                }
+
+                skin.addNodeRef(node_map[act_skin_node.node_id].value(), act_skin_node.inverse_bind_matrix);
+            }
+
+            return model->addSkin(std::move(skin));
+        }();
+
+        for (const auto act_submesh_id : act_mesh.submesh_ids) {
+            const auto &act_any_submesh = act_model.submeshes[act_submesh_id];
+            std::visit(
+                util::overload{
+                    [&](const act::Model::StaticSubmesh &act_submesh) {
+                std::vector<graphics::Renderer::StaticVertex> vertices{act_submesh.vertices.size()};
+                for (size_t i = 0; i < act_submesh.vertices.size(); ++i) {
+                    vertices[i].position = act_submesh.vertices[i].position;
+                    vertices[i].normal = act_submesh.vertices[i].normal;
+                    vertices[i].tangent = act_submesh.vertices[i].tangent;
+                    vertices[i].uv = act_submesh.vertices[i].texcoord;
+                }
+
+                auto material_id = material_map[act_submesh.material];
+                if (!material_id.has_value()) {
+                    LogError("model: invalid material for act submesh {}", act_submesh_id);
+                    return;
+                }
+
+                auto mesh_id = model->addMesh(vertices, act_submesh.indices, material_id.value());
+                submesh_map[act_submesh_id] = mesh_id.has_value() ? AnyMeshId{mesh_id.value()} : std::monostate{};
+            },
+                    [&](const act::Model::RiggedSubmesh &act_submesh) {
+                // don't add animated submesh if skin is not present
+                if (!skin_id.has_value()) {
+                    return;
+                }
+
+                std::vector<graphics::Renderer::SkinnedVertex> vertices{act_submesh.vertices.size()};
+                for (size_t i = 0; i < act_submesh.vertices.size(); ++i) {
+                    vertices[i].position = glm::fvec4{act_submesh.vertices[i].position, 0.0f};
+                    vertices[i].normal = glm::fvec4{act_submesh.vertices[i].normal, 0.0f};
+                    vertices[i].tangent = act_submesh.vertices[i].tangent;
+                    vertices[i].uv = act_submesh.vertices[i].texcoord;
+                    vertices[i].bones = act_submesh.vertices[i].joints;
+                    vertices[i].weights = act_submesh.vertices[i].weights;
+                }
+
+                auto material_id = material_map[act_submesh.material];
+                if (!material_id.has_value()) {
+                    LogError("model: invalid material for act submesh {}", act_submesh_id);
+                    return;
+                }
+
+                auto mesh_id =
+                    model->addAnimatedMesh(vertices, act_submesh.indices, material_id.value(), skin_id.value());
+                submesh_map[act_submesh_id] = mesh_id.has_value() ? AnyMeshId{mesh_id.value()} : std::monostate{};
+            },
+                },
+                act_any_submesh);
+        }
     }
 
     return model;

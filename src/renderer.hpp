@@ -155,7 +155,7 @@ private:
         auto storage() const -> const cbBufferDataType & { return data_; }
 
         auto upload(VkCommandBuffer command_buffer) -> void {
-            BufferHelper::upload(command_buffer, {reinterpret_cast<const uint8_t *>(data_), kDataSize});
+            BufferHelper::upload(command_buffer, {reinterpret_cast<const uint8_t *>(&data_), kDataSize});
         }
 
     private:
@@ -327,10 +327,10 @@ public:
     };
 
     struct SkinnedVertex {
-        glm::fvec3 position;
-        glm::fvec3 normal;
+        glm::fvec4 position; // vec3 + pad
+        glm::fvec4 normal;   // vec3 + pad
         glm::fvec2 uv;
-        glm::fvec3 color;
+        glm::fvec4 color; // vec3 + pad
         glm::fvec4 tangent;
         glm::uvec4 bones;
         glm::fvec4 weights;
@@ -340,7 +340,8 @@ public:
         SkinnedVertex(
             const glm::fvec3 &pos, const glm::fvec3 &norm, const glm::fvec2 &uv_coords, const glm::fvec3 &col,
             const glm::fvec4 &tan, const glm::uvec4 &bones, const glm::fvec4 &weights)
-            : position{pos}, normal{norm}, uv{uv_coords}, color{col}, tangent{tan}, bones{bones}, weights{weights} {}
+            : position{pos.x, pos.y, pos.z, 0.0f}, normal{norm.y, norm.y, norm.z, 0.0f}, uv{uv_coords},
+              color{col.x, col.y, col.z, 0.0f}, tangent{tan}, bones{bones}, weights{weights} {}
     };
 
     enum PerFrameDescriptors : uint32_t {
@@ -349,6 +350,15 @@ public:
 
     class Mesh final {
     public:
+        struct Description {
+            std::span<const uint8_t> vertex_buffer;
+            std::span<const uint32_t> indices;
+
+            uint32_t num_vertices;
+            VkBufferUsageFlags vertex_buffer_flags;
+            VkBufferUsageFlags index_buffer_flags;
+        };
+
         Mesh(const Mesh &) = delete;
         auto operator=(const Mesh &) = delete;
 
@@ -367,9 +377,7 @@ public:
         auto indexBufferSize() const -> VkDeviceSize { return index_buffer_size_; }
 
     private:
-        static auto create(
-            Renderer *renderer, std::span<const uint8_t> vertex_buffer, uint32_t num_vertices,
-            std::span<const uint32_t> indices) -> std::optional<Mesh>;
+        static auto create(Renderer *renderer, const Description &desc) -> std::optional<Mesh>;
 
         Mesh() = default;
 
@@ -435,29 +443,35 @@ public:
 
     class ActorMesh final {
     public:
-        ~ActorMesh() noexcept;
+        ~ActorMesh() noexcept = default;
 
         ActorMesh(const ActorMesh &) = delete;
         auto operator=(const ActorMesh &) = delete;
 
-        ActorMesh(ActorMesh &&) noexcept;
-        auto operator=(ActorMesh &&) noexcept -> ActorMesh &;
+        ActorMesh(ActorMesh &&) noexcept = default;
+        auto operator=(ActorMesh &&) noexcept -> ActorMesh & = default;
 
-        auto inputMesh() const -> AnimatedMeshId { return input_mesh_.value(); }
-        auto riggedMesh() const -> MeshId { return rigged_mesh_.value(); }
+        auto inputMesh() const -> AnimatedMeshId { return input_mesh_; }
+        auto vertexBuffer() const -> const Buffer & { return output_buffer_; }
         auto transformBuffer() const -> const DataBuffer<cbSkinningBuffer> & { return buffer_; }
+
+        auto skinningBuffer() const -> const cbSkinningBuffer & { return buffer_.storage(); }
+        auto skinningBuffer() -> cbSkinningBuffer & { return buffer_.storage(); }
 
     private:
         static auto create(Renderer *renderer, AnimatedMeshId mesh) -> std::optional<ActorMesh>;
 
-        ActorMesh(
-            Renderer *renderer, AnimatedMeshId input_mesh, MeshId rigged_mesh, DataBuffer<cbSkinningBuffer> &&buffer)
-            : renderer_{renderer}, input_mesh_{input_mesh}, rigged_mesh_{rigged_mesh}, buffer_{std::move(buffer)} {};
+        ActorMesh(Renderer *renderer, AnimatedMeshId input_mesh, DataBuffer<cbSkinningBuffer> &&buffer)
+            : renderer_{renderer}, input_mesh_{input_mesh}, buffer_{std::move(buffer)} {};
 
         Renderer *renderer_ = nullptr;
 
-        std::optional<AnimatedMeshId> input_mesh_;
-        std::optional<MeshId> rigged_mesh_;
+        AnimatedMeshId input_mesh_;
+        Buffer output_buffer_;
+
+        VkDeviceSize output_buffer_size_ = 0;
+        size_t num_vertices_ = 0;
+
         DataBuffer<cbSkinningBuffer> buffer_;
 
         friend class Renderer;
@@ -492,8 +506,18 @@ public:
         const auto vertex_buffer_ptr = reinterpret_cast<const uint8_t *>(std::ranges::data(vertex_input_range));
         const auto vertex_buffer_size = std::ranges::size(vertex_input_range) * sizeof(StaticVertex);
 
-        auto mesh = Mesh::create(
-            this, {vertex_buffer_ptr, vertex_buffer_size}, std::ranges::size(vertex_input_range), index_input_range);
+        const auto index_buffer_ptr = std::ranges::data(index_input_range);
+        const auto index_buffer_size = std::ranges::size(index_input_range);
+
+        Mesh::Description desc = {
+            .vertex_buffer = {vertex_buffer_ptr, vertex_buffer_size},
+            .indices = {index_buffer_ptr, index_buffer_size},
+            .num_vertices = static_cast<uint32_t>(std::ranges::size(vertex_input_range)),
+            .vertex_buffer_flags = 0,
+            .index_buffer_flags = 0,
+        };
+
+        auto mesh = Mesh::create(this, desc);
 
         if (!mesh.has_value()) {
             return std::nullopt;
@@ -515,19 +539,30 @@ public:
         return addTexture(std::move(texture.value()));
     }
 
-    template <util::TypedContiguousRange<StaticVertex> VR, util::TypedContiguousRange<const uint32_t> IR>
-    auto createAnimatedMesh(const VR &vertex_input_range, const IR &index_input_range) -> std::optional<MeshId> {
+    template <util::TypedContiguousRange<SkinnedVertex> VR, util::TypedContiguousRange<const uint32_t> IR>
+    auto createAnimatedMesh(const VR &vertex_input_range, const IR &index_input_range)
+        -> std::optional<AnimatedMeshId> {
         const auto vertex_buffer_ptr = reinterpret_cast<const uint8_t *>(std::ranges::data(vertex_input_range));
-        const auto vertex_buffer_size = std::ranges::size(vertex_input_range) * sizeof(StaticVertex);
+        const auto vertex_buffer_size = std::ranges::size(vertex_input_range) * sizeof(SkinnedVertex);
 
-        auto mesh = Mesh::create(
-            this, {vertex_buffer_ptr, vertex_buffer_size}, std::ranges::size(vertex_input_range), index_input_range);
+        const auto index_buffer_ptr = std::ranges::data(index_input_range);
+        const auto index_buffer_size = std::ranges::size(index_input_range);
+
+        Mesh::Description desc = {
+            .vertex_buffer = {vertex_buffer_ptr, vertex_buffer_size},
+            .indices = {index_buffer_ptr, index_buffer_size},
+            .num_vertices = static_cast<uint32_t>(std::ranges::size(vertex_input_range)),
+            .vertex_buffer_flags = 0,
+            .index_buffer_flags = 0,
+        };
+
+        auto mesh = Mesh::create(this, desc);
 
         if (!mesh.has_value()) {
             return std::nullopt;
         }
 
-        return addMesh(std::move(mesh.value()));
+        return addAnimMesh(std::move(mesh.value()));
     }
 
     auto createActorMesh(AnimatedMeshId mesh) -> std::optional<ActorMeshId> {
