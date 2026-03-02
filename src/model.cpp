@@ -119,13 +119,21 @@ auto Model::Pose::fromModel(const Model &model) -> std::unique_ptr<Pose> {
     pose->recomputeTransformSubtree(pose->root());
 
     for (const auto &anim_mesh : model.animated_meshes_) {
-        const auto actor_mesh = pose->renderer_->createActorMesh(anim_mesh.handle().id());
-        if (!actor_mesh.has_value()) {
+        const auto actor_mesh_id = pose->renderer_->createActorMesh(anim_mesh.handle().id());
+        if (!actor_mesh_id.has_value()) {
             LogError("model: failed to allocate actor mesh");
             return nullptr;
         }
 
-        pose->actor_meshes_.push_back(actor_mesh.value());
+        pose->actor_meshes_.push_back(actor_mesh_id.value());
+
+        // fill with bind pose matrices
+        const auto &skin = model.skins_[anim_mesh.skin().index()];
+
+        auto actor_mesh = pose->renderer_->getActorMesh(actor_mesh_id.value());
+        auto bone_array = actor_mesh->skinningBuffer().bones;
+
+        std::fill(bone_array, bone_array + skin.nodes().size(), glm::fmat4x4{1.0f});
     }
 
     return pose;
@@ -163,10 +171,6 @@ Model::Pose::~Pose() noexcept {
             renderer_->deleteActorMesh(actor_mesh);
         }
     }
-}
-
-auto Model::Pose::updateBuffers() const -> void {
-    // TODO
 }
 
 Model::Model(Renderer *renderer) : renderer_{renderer} {
@@ -487,10 +491,10 @@ auto Model::fromAct(Renderer *renderer, const act::Model &act_model) -> std::uni
                     [&](const act::Model::StaticSubmesh &act_submesh) {
                 std::vector<graphics::Renderer::StaticVertex> vertices{act_submesh.vertices.size()};
                 for (size_t i = 0; i < act_submesh.vertices.size(); ++i) {
-                    vertices[i].position = act_submesh.vertices[i].position;
-                    vertices[i].normal = act_submesh.vertices[i].normal;
+                    vertices[i].position = glm::fvec4{act_submesh.vertices[i].position, 0.0f};
+                    vertices[i].normal = glm::fvec4{act_submesh.vertices[i].normal, 0.0f};
                     vertices[i].tangent = act_submesh.vertices[i].tangent;
-                    vertices[i].uv = act_submesh.vertices[i].texcoord;
+                    vertices[i].uv = glm::fvec4{act_submesh.vertices[i].texcoord, 0.0f, 0.0f};
                 }
 
                 auto material_id = material_map[act_submesh.material];
@@ -513,7 +517,7 @@ auto Model::fromAct(Renderer *renderer, const act::Model &act_model) -> std::uni
                     vertices[i].position = glm::fvec4{act_submesh.vertices[i].position, 0.0f};
                     vertices[i].normal = glm::fvec4{act_submesh.vertices[i].normal, 0.0f};
                     vertices[i].tangent = act_submesh.vertices[i].tangent;
-                    vertices[i].uv = act_submesh.vertices[i].texcoord;
+                    vertices[i].uv = glm::fvec4{act_submesh.vertices[i].texcoord, 0.0f, 0.0f};
                     vertices[i].bones = act_submesh.vertices[i].joints;
                     vertices[i].weights = act_submesh.vertices[i].weights;
                 }

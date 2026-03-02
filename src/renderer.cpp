@@ -247,6 +247,19 @@ public:
         return id;
     }
 
+    auto getResource(const Id &id) -> T * {
+        auto &slot = storage_[id.index()];
+        if (id.generation() != slot.generation) {
+            return nullptr;
+        }
+
+        if (!slot.valid || !slot.resource.has_value()) {
+            return nullptr;
+        }
+
+        return &slot.resource.value();
+    }
+
     auto getResource(const Id &id) const -> const T * {
         auto &slot = storage_[id.index()];
         if (id.generation() != slot.generation) {
@@ -745,7 +758,12 @@ auto Renderer::ActorMesh::create(Renderer *renderer, AnimatedMeshId mesh) -> std
         return std::nullopt;
     }
 
-    ActorMesh actor{renderer, mesh, DataBuffer<cbSkinningBuffer>{renderer}};
+    auto bone_buffer = SharedDataBuffer<cbSkinningBuffer>::create(renderer);
+    if (!bone_buffer.has_value()) {
+        return std::nullopt;
+    }
+
+    ActorMesh actor{renderer, mesh, std::move(bone_buffer.value())};
     actor.num_vertices_ = base_mesh->numVertices();
     actor.output_buffer_size_ = actor.num_vertices_ * sizeof(StaticVertex);
     actor.output_buffer_ = actor.renderer_->context_->memory().createDeviceBuffer(
@@ -814,6 +832,12 @@ auto Renderer::create(const Description &description) -> std::unique_ptr<Rendere
             vkCreateSemaphore(renderer->context_->device(), &semaphore_desc, nullptr, &frame.present_semaphore));
     }
 
+    renderer->skinning_pass_ = ComputeSkinningPass::create(renderer.get(), description.shader_loader.get());
+    if (!renderer->skinning_pass_) {
+        LogError("vulkan: renderer cannot initialize compute skinning pipeline");
+        return nullptr;
+    }
+
     renderer->geometry_pass_ = OpaqueGeometryPass::create(renderer.get(), description.shader_loader.get());
     if (!renderer->geometry_pass_) {
         LogError("vulkan: renderer cannot initialize graphics pipeline");
@@ -846,6 +870,8 @@ auto Renderer::getAnimMesh(const AnimatedMeshId &id) const -> const Mesh * { ret
 auto Renderer::getActorMesh(const ActorMeshId &id) const -> const ActorMesh * {
     return actor_mesh_pool_->getResource(id);
 }
+
+auto Renderer::getActorMesh(const ActorMeshId &id) -> ActorMesh * { return actor_mesh_pool_->getResource(id); }
 
 auto Renderer::unrefMesh(const MeshId &id) -> void { mesh_pool_->destroyResource(id); }
 auto Renderer::unrefTexture(const TextureId &id) -> void { texture_pool_->destroyResource(id); }
@@ -890,6 +916,81 @@ auto Renderer::createSwapchainData() -> void {
     for (size_t i = 0; i < num_swapchain_images; ++i) {
         VK_CHECK_ERROR(
             vkCreateSemaphore(context_->device(), &semaphore_desc, nullptr, &swapchain_data_[i].render_semaphore));
+    }
+}
+
+auto Renderer::ComputeSkinningPass::create(Renderer *renderer, const IShaderLoader *shader_loader)
+    -> std::unique_ptr<ComputeSkinningPass> {
+    std::unique_ptr<ComputeSkinningPass> pass{new (std::nothrow) ComputeSkinningPass()};
+    if (!pass) {
+        LogError("vulkan: renderer cannot allocate compute skinning pass resources");
+        return nullptr;
+    }
+
+    pass->renderer_ = renderer;
+
+    const auto device = pass->renderer_->context_->device();
+
+    const auto shader_buffer = shader_loader->loadSkinningPassShader();
+    if (!shader_buffer) {
+        LogError("vulkan: renderer cannot load main shader");
+        return nullptr;
+    }
+
+    VkShaderModuleCreateInfo shader_module_info = {
+        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+        .codeSize = shader_buffer->size() * sizeof(uint32_t),
+        .pCode = shader_buffer->data(),
+    };
+
+    VK_CHECK_ERROR(vkCreateShaderModule(device, &shader_module_info, nullptr, &pass->shader_module_));
+
+    // graphics pipeline
+    VkPushConstantRange push_constant_range = {
+        .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+        .size = sizeof(cbPushConstantBuffer),
+    };
+
+    VkPipelineLayoutCreateInfo pipeline_layout_desc = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        .setLayoutCount = 0,
+        .pSetLayouts = nullptr,
+        .pushConstantRangeCount = 1,
+        .pPushConstantRanges = &push_constant_range,
+    };
+
+    VK_CHECK_ERROR(vkCreatePipelineLayout(device, &pipeline_layout_desc, nullptr, &pass->pipeline_layout_));
+
+    VkComputePipelineCreateInfo pipeline_info = {
+        .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+        .stage =
+            VkPipelineShaderStageCreateInfo{
+                .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+                .module = pass->shader_module_,
+                .pName = "main",
+            },
+        .layout = pass->pipeline_layout_,
+    };
+
+    VK_CHECK_ERROR(vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pass->pipeline_));
+    return pass;
+}
+
+Renderer::ComputeSkinningPass::~ComputeSkinningPass() noexcept {
+    if (VK_NULL_HANDLE != pipeline_) {
+        vkDestroyPipeline(renderer_->context_->device(), pipeline_, nullptr);
+        pipeline_ = VK_NULL_HANDLE;
+    }
+
+    if (VK_NULL_HANDLE != pipeline_layout_) {
+        vkDestroyPipelineLayout(renderer_->context_->device(), pipeline_layout_, nullptr);
+        pipeline_layout_ = VK_NULL_HANDLE;
+    }
+
+    if (VK_NULL_HANDLE != shader_module_) {
+        vkDestroyShaderModule(renderer_->context_->device(), shader_module_, nullptr);
+        shader_module_ = VK_NULL_HANDLE;
     }
 }
 
@@ -1143,15 +1244,19 @@ auto Renderer::frame() -> util::Result {
         scene_buffer_data.static_objects[i].world = draw_queue_[i]->world_matrix;
 
         if (draw_queue_[i]->diffuse_map.has_value()) {
-            scene_buffer_data.static_objects[i].diffuse_map =
-                static_cast<int32_t>(draw_queue_[i]->diffuse_map.value().index());
+            if (nullptr != texture_pool_->refResource(draw_queue_[i]->diffuse_map.value(), current_frame_)) {
+                scene_buffer_data.static_objects[i].diffuse_map =
+                    static_cast<int32_t>(draw_queue_[i]->diffuse_map.value().index());
+            }
         } else {
             scene_buffer_data.static_objects[i].diffuse_map = -1;
         }
 
         if (draw_queue_[i]->normal_map.has_value()) {
-            scene_buffer_data.static_objects[i].normal_map =
-                static_cast<int32_t>(draw_queue_[i]->normal_map.value().index());
+            if (nullptr != texture_pool_->refResource(draw_queue_[i]->normal_map.value(), current_frame_)) {
+                scene_buffer_data.static_objects[i].normal_map =
+                    static_cast<int32_t>(draw_queue_[i]->normal_map.value().index());
+            }
         } else {
             scene_buffer_data.static_objects[i].normal_map = -1;
         }
@@ -1165,7 +1270,21 @@ auto Renderer::frame() -> util::Result {
         .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
     };
 
+    // upload all queued compute skinning bone buffers
+    for (uint32_t i = 0; i < skinning_queue_fill_; ++i) {
+        const auto actor_id = skinning_queue_[i]->skinned_mesh;
+        auto *actor = actor_mesh_pool_->refResource(actor_id, current_frame_);
+
+        if (!actor) {
+            continue;
+        }
+
+        actor->transformBuffer().upload(current_frame_);
+    }
+
     VK_CHECK_ERROR(vkBeginCommandBuffer(command_buffer, &command_buffer_begin_desc));
+
+    // TODO: compute skinning
 
     // upload buffer data - this also inserts a memory barrier!!
     scene_buffer->upload(command_buffer);

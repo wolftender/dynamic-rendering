@@ -131,6 +131,15 @@ auto Buffer::flush(VkDeviceSize offset, VkDeviceSize size) const {
     VK_CHECK_ERROR(vmaFlushAllocation(allocator_, allocation_, offset, size));
 }
 
+auto Buffer::deviceAddress() const -> VkDeviceAddress {
+    VkBufferDeviceAddressInfo addr_info = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
+        .buffer = buffer_,
+    };
+
+    return vkGetBufferDeviceAddress(device_, &addr_info);
+}
+
 auto Buffer::destroy() noexcept -> void {
     if (VK_NULL_HANDLE != buffer_) {
         vmaDestroyBuffer(allocator_, buffer_, allocation_);

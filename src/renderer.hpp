@@ -219,10 +219,11 @@ public:
 
     template <typename cbBufferDataType> class DataBuffer final {
     public:
-        DataBuffer(Renderer *renderer) : buffers_{makeBufferArray(renderer)} {}
+        DataBuffer(Renderer *renderer) : renderer_{renderer}, buffers_{makeBufferArray(renderer)} {}
 
         auto storage() -> cbBufferDataType & { return storage_; }
         auto storage() const -> const cbBufferDataType & { return storage_; }
+        auto deviceAddress(uint32_t frame) -> VkDeviceAddress { return buffers_[frame].deviceAddress(); }
 
         auto upload(VkCommandBuffer command_buffer, uint32_t frame) -> void {
             buffers_[frame].upload(
@@ -243,11 +244,50 @@ public:
         std::array<BufferHelper, kNumFramesInFlight> buffers_;
     };
 
+    template <typename cbBufferDataType> class SharedDataBuffer final {
+    public:
+        static auto create(Renderer *renderer) -> std::optional<SharedDataBuffer> {
+            SharedDataBuffer<cbBufferDataType> shared_buffer_helper;
+
+            shared_buffer_helper.renderer_ = renderer;
+            for (auto &buffer : shared_buffer_helper.buffers_) {
+                buffer.buffer = shared_buffer_helper.renderer_->context_->memory().createSharedBuffer(
+                    VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, sizeof(cbBufferDataType));
+
+                buffer.address = buffer.buffer.deviceAddress();
+            }
+
+            return shared_buffer_helper;
+        }
+
+        auto storage() -> cbBufferDataType & { return storage_; }
+        auto storage() const -> const cbBufferDataType & { return storage_; }
+        auto deviceAddress(uint32_t frame) -> VkDeviceAddress { return buffers_[frame].address; }
+
+        auto upload(uint32_t frame) const -> void {
+            ::memcpy(buffers_[frame].buffer.cpuMappedPointer(), &storage_, sizeof(cbBufferDataType));
+        }
+
+    private:
+        struct SharedBufferWithAddress {
+            Buffer buffer;
+            VkDeviceAddress address;
+        };
+
+        SharedDataBuffer() = default;
+
+        Renderer *renderer_ = nullptr;
+
+        cbBufferDataType storage_;
+        std::array<SharedBufferWithAddress, kNumFramesInFlight> buffers_;
+    };
+
     class IShaderLoader {
     public:
         IShaderLoader() = default;
 
         virtual ~IShaderLoader() = default;
+        virtual auto loadSkinningPassShader() const -> std::optional<std::vector<uint32_t>> = 0;
         virtual auto loadGeometryPassShader() const -> std::optional<std::vector<uint32_t>> = 0;
 
         IShaderLoader(const IShaderLoader &) = delete;
@@ -299,10 +339,10 @@ public:
     };
 
     struct StaticVertex {
-        glm::fvec3 position;
-        glm::fvec3 normal;
-        glm::fvec2 uv;
-        glm::fvec3 color;
+        glm::fvec4 position; // vec3 + pad
+        glm::fvec4 normal;   // vec3 + pad
+        glm::fvec4 uv;       // vec2 + pad
+        glm::fvec4 color;    // vec3 + pad
         glm::fvec4 tangent;
 
         StaticVertex() = default;
@@ -310,27 +350,30 @@ public:
         StaticVertex(
             const glm::fvec3 &pos, const glm::fvec3 &norm, const glm::fvec2 &uv_coords, const glm::fvec3 &col,
             const glm::fvec4 &tan)
-            : position{pos}, normal{norm}, uv{uv_coords}, color{col}, tangent{tan} {}
+            : position{pos, 0.0f}, normal{norm, 0.0f}, uv{uv_coords, 0.0f, 0.0f}, color{col, 1.0f}, tangent{tan} {}
 
         StaticVertex(const glm::fvec3 &pos, const glm::fvec3 &norm, const glm::fvec2 &uv_coords, const glm::fvec4 &tan)
-            : position{pos}, normal{norm}, uv{uv_coords}, color{1.0f, 1.0f, 1.0f}, tangent{tan} {}
+            : position{pos, 0.0f}, normal{norm, 0.0f}, uv{uv_coords, 0.0f, 0.0f}, color{1.0f, 1.0f, 1.0f, 1.0f},
+              tangent{tan} {}
 
         StaticVertex(
             float x, float y, float z, float nx, float ny, float nz, float u, float v, float tx, float ty, float tz,
             float tw)
-            : position{x, y, z}, normal{nx, ny, nz}, uv{u, v}, color{1.0f, 1.0f, 1.0f}, tangent{tx, ty, tz, tw} {}
+            : position{x, y, z, 0.0f}, normal{nx, ny, nz, 0.0f}, uv{u, v, 0.0f, 0.0f}, color{1.0f, 1.0f, 1.0f, 1.0f},
+              tangent{tx, ty, tz, tw} {}
 
         StaticVertex(
             float x, float y, float z, float nx, float ny, float nz, float u, float v, float r, float g, float b,
             float tx, float ty, float tz, float tw)
-            : position{x, y, z}, normal{nx, ny, nz}, uv{u, v}, color{r, g, b}, tangent{tx, ty, tz, tw} {}
+            : position{x, y, z, 0.0f}, normal{nx, ny, nz, 0.0f}, uv{u, v, 0.0f, 0.0f}, color{r, g, b, 1.0f},
+              tangent{tx, ty, tz, tw} {}
     };
 
     struct SkinnedVertex {
         glm::fvec4 position; // vec3 + pad
         glm::fvec4 normal;   // vec3 + pad
-        glm::fvec2 uv;
-        glm::fvec4 color; // vec3 + pad
+        glm::fvec4 uv;       // vec2 + pad
+        glm::fvec4 color;    // vec3 + pad
         glm::fvec4 tangent;
         glm::uvec4 bones;
         glm::fvec4 weights;
@@ -340,7 +383,7 @@ public:
         SkinnedVertex(
             const glm::fvec3 &pos, const glm::fvec3 &norm, const glm::fvec2 &uv_coords, const glm::fvec3 &col,
             const glm::fvec4 &tan, const glm::uvec4 &bones, const glm::fvec4 &weights)
-            : position{pos.x, pos.y, pos.z, 0.0f}, normal{norm.y, norm.y, norm.z, 0.0f}, uv{uv_coords},
+            : position{pos.x, pos.y, pos.z, 0.0f}, normal{norm.y, norm.y, norm.z, 0.0f}, uv{uv_coords, 0.0f, 0.0f},
               color{col.x, col.y, col.z, 0.0f}, tangent{tan}, bones{bones}, weights{weights} {}
     };
 
@@ -453,7 +496,7 @@ public:
 
         auto inputMesh() const -> AnimatedMeshId { return input_mesh_; }
         auto vertexBuffer() const -> const Buffer & { return output_buffer_; }
-        auto transformBuffer() const -> const DataBuffer<cbSkinningBuffer> & { return buffer_; }
+        auto transformBuffer() const -> const SharedDataBuffer<cbSkinningBuffer> & { return buffer_; }
 
         auto skinningBuffer() const -> const cbSkinningBuffer & { return buffer_.storage(); }
         auto skinningBuffer() -> cbSkinningBuffer & { return buffer_.storage(); }
@@ -461,7 +504,7 @@ public:
     private:
         static auto create(Renderer *renderer, AnimatedMeshId mesh) -> std::optional<ActorMesh>;
 
-        ActorMesh(Renderer *renderer, AnimatedMeshId input_mesh, DataBuffer<cbSkinningBuffer> &&buffer)
+        ActorMesh(Renderer *renderer, AnimatedMeshId input_mesh, SharedDataBuffer<cbSkinningBuffer> &&buffer)
             : renderer_{renderer}, input_mesh_{input_mesh}, buffer_{std::move(buffer)} {};
 
         Renderer *renderer_ = nullptr;
@@ -472,7 +515,7 @@ public:
         VkDeviceSize output_buffer_size_ = 0;
         size_t num_vertices_ = 0;
 
-        DataBuffer<cbSkinningBuffer> buffer_;
+        SharedDataBuffer<cbSkinningBuffer> buffer_;
 
         friend class Renderer;
     };
@@ -602,6 +645,7 @@ public:
     auto getTexture(const TextureId &id) const -> const Texture *;
     auto getAnimMesh(const AnimatedMeshId &id) const -> const Mesh *;
     auto getActorMesh(const ActorMeshId &id) const -> const ActorMesh *;
+    auto getActorMesh(const ActorMeshId &id) -> ActorMesh *;
 
     auto frame() -> util::Result;
 
@@ -614,7 +658,49 @@ public:
         return util::Result::eSuccess;
     }
 
+    auto drawSkinnedMesh(SkinnedDrawDescription &&desc) -> util::Result {
+        if (skinning_queue_fill_ == skinning_queue_.size()) {
+            return util::Result::eFailure;
+        }
+
+        skinning_queue_[skinning_queue_fill_++] = std::move(desc);
+        return util::Result::eSuccess;
+    }
+
 private:
+    class ComputeSkinningPass final {
+    public:
+        struct cbPushConstantBuffer {
+            VkDeviceAddress bone_buffer;
+            VkDeviceAddress input_buffer;
+            VkDeviceAddress output_buffer;
+        };
+
+        static auto create(Renderer *renderer, const IShaderLoader *shader_loader)
+            -> std::unique_ptr<ComputeSkinningPass>;
+
+        ~ComputeSkinningPass() noexcept;
+
+        ComputeSkinningPass(const ComputeSkinningPass &) = delete;
+        auto operator=(const ComputeSkinningPass &) = delete;
+
+        ComputeSkinningPass(ComputeSkinningPass &&) noexcept = delete;
+        auto operator=(ComputeSkinningPass &&) noexcept = delete;
+
+        auto shaderModule() const -> VkShaderModule { return shader_module_; }
+        auto pipelineLayout() const -> VkPipelineLayout { return pipeline_layout_; }
+        auto pipeline() const -> VkPipeline { return pipeline_; }
+
+    private:
+        ComputeSkinningPass() = default;
+
+        Renderer *renderer_ = nullptr;
+
+        VkShaderModule shader_module_ = VK_NULL_HANDLE;
+        VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
+        VkPipeline pipeline_ = VK_NULL_HANDLE;
+    };
+
     class OpaqueGeometryPass final {
     public:
         struct cbPushConstantBuffer {
@@ -699,12 +785,15 @@ private:
     std::unique_ptr<ResourcePool<ActorMesh, ActorMeshTag, kNumMaxSkinnedObjects>> actor_mesh_pool_;
 
     // render passes
-    // std::unique_ptr<DescriptorSetHelper> descriptor_helper_ = nullptr;
+    std::unique_ptr<ComputeSkinningPass> skinning_pass_ = nullptr;
     std::unique_ptr<OpaqueGeometryPass> geometry_pass_ = nullptr;
 
     // draw queue
+    std::array<std::optional<SkinnedDrawDescription>, kNumMaxSkinnedObjects> skinning_queue_;
     std::array<std::optional<OpaqueDrawDescription>, kNumMaxStaticObjects> draw_queue_;
+    uint32_t skinning_queue_fill_ = 0;
     uint32_t draw_queue_fill_ = 0;
+
     uint32_t current_frame_ = 0;
 };
 

@@ -84,6 +84,7 @@ private:
         ShaderLoaderImpl(const asset::ArchiveReader *archive);
         ~ShaderLoaderImpl() = default;
 
+        auto loadSkinningPassShader() const -> std::optional<std::vector<uint32_t>> override;
         auto loadGeometryPassShader() const -> std::optional<std::vector<uint32_t>> override;
 
     private:
@@ -135,6 +136,28 @@ auto main([[maybe_unused]] int argc, [[maybe_unused]] char **argv) -> int {
 }
 
 ApplicationState::ShaderLoaderImpl::ShaderLoaderImpl(const asset::ArchiveReader *archive) : archive_{archive} {}
+
+auto ApplicationState::ShaderLoaderImpl::loadSkinningPassShader() const -> std::optional<std::vector<uint32_t>> {
+    const auto buffer = archive_->getFileContent("skinning.spv");
+    if (!buffer) {
+        LogError("failed to load skinning.spv");
+        return std::nullopt;
+    }
+
+    constexpr auto kWordSize = sizeof(uint32_t);
+    if (buffer->size() % kWordSize != 0) {
+        LogError("invalid alignment of spir-v bytecode");
+        return std::nullopt;
+    }
+
+    const auto size_in_words = buffer->size() / kWordSize;
+    std::vector<uint32_t> spv_buffer;
+
+    spv_buffer.resize(size_in_words);
+    ::memcpy(spv_buffer.data(), buffer->data(), size_in_words * sizeof(uint32_t));
+
+    return spv_buffer;
+}
 
 auto ApplicationState::ShaderLoaderImpl::loadGeometryPassShader() const -> std::optional<std::vector<uint32_t>> {
     const auto buffer = archive_->getFileContent("shader.spv");

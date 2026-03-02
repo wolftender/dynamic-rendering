@@ -56,6 +56,7 @@ public:
     auto flush(VkDeviceSize offset = 0ull, VkDeviceSize size = VK_WHOLE_SIZE) const;
 
     auto cpuMappedPointer() const -> void * { return allocation_info_.pMappedData; }
+    auto deviceAddress() const -> VkDeviceAddress;
 
 private:
     auto destroy() noexcept -> void;

@@ -319,7 +319,6 @@ public:
         Pose(Pose &&) noexcept = delete;
         auto operator=(Pose &&) noexcept -> Pose & = delete;
 
-        auto updateBuffers() const -> void;
         auto root() const -> NodeId { return NodeId{0ul}; }
         auto getNode(NodeId handle) -> Node *;
         auto getNode(NodeId handle) const -> const Node *;
@@ -510,28 +509,6 @@ private:
     std::vector<NodeId> mesh_nodes_;
 
     friend class Node;
-};
-
-class Actor final {
-public:
-    Actor(Renderer *renderer, Model *model);
-    ~Actor() noexcept;
-
-    Actor(const Actor &) = delete;
-    auto operator=(const Actor &) = delete;
-
-    Actor(Actor &&a) noexcept;
-    auto operator=(Actor &&a) noexcept -> Actor &;
-
-    auto renderer() const -> const Renderer &;
-    auto model() const -> const Model &;
-
-private:
-    Renderer *renderer_ = nullptr;
-    Model *model_ = nullptr;
-
-    Renderer::AnimatedMeshId mesh_;
-    Renderer::ActorMeshId actor_;
 };
 
 } // namespace graphics
