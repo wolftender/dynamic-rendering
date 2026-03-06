@@ -106,6 +106,8 @@ using f32   = float;
 using f64   = double;
 // clang-format on
 
+template <typename T> auto align_ptr(T size, T align) -> T { return (size + align - 1) & ~(align - 1); }
+
 template <typename T>
 concept IsPrimitiveType = std::same_as<T, u8> || std::same_as<T, u16> || std::same_as<T, u32> || std::same_as<T, u64> ||
                           std::same_as<T, s8> || std::same_as<T, s16> || std::same_as<T, s32> || std::same_as<T, s64> ||

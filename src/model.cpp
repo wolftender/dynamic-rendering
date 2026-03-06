@@ -347,6 +347,26 @@ auto Model::render(Renderer &renderer, const Pose &pose, const glm::fmat4x4 &wor
 
             renderer.drawOpaqueMesh(std::move(desc));
         }
+
+        for (const auto &anim_mesh_id : node.animatedMeshes()) {
+            const auto &anim_mesh = animated_meshes_[anim_mesh_id.index()];
+            const auto &material = materials_[anim_mesh.material().index()];
+
+            Renderer::SkinnedDrawDescription desc = {
+                .skinned_mesh = pose.actor_meshes_[anim_mesh_id.index()],
+                .world_matrix = matrix,
+            };
+
+            if (material.diffuse().has_value()) {
+                desc.diffuse_map = textures_[material.diffuse()->index()].handle().id();
+            }
+
+            if (material.normal().has_value()) {
+                desc.normal_map = textures_[material.normal()->index()].handle().id();
+            }
+
+            renderer.drawSkinnedMesh(std::move(desc));
+        }
     }
 }
 
@@ -464,6 +484,9 @@ auto Model::fromAct(Renderer *renderer, const act::Model &act_model) -> std::uni
         const auto &act_node = act_model.nodes[act_node_id];
         const auto &act_mesh = act_model.meshes[act_node.mesh_id.value()];
 
+        auto node_id = node_map[act_node_id];
+        auto &node = model->nodes_[node_id->index()];
+
         std::optional<SkinId> skin_id = [&]() -> std::optional<SkinId> {
             if (!act_node.skin_id.has_value()) {
                 return std::nullopt;
@@ -505,6 +528,10 @@ auto Model::fromAct(Renderer *renderer, const act::Model &act_model) -> std::uni
 
                 auto mesh_id = model->addMesh(vertices, act_submesh.indices, material_id.value());
                 submesh_map[act_submesh_id] = mesh_id.has_value() ? AnyMeshId{mesh_id.value()} : std::monostate{};
+
+                if (mesh_id.has_value()) {
+                    node.addMesh(mesh_id.value());
+                }
             },
                     [&](const act::Model::RiggedSubmesh &act_submesh) {
                 // don't add animated submesh if skin is not present
@@ -531,6 +558,10 @@ auto Model::fromAct(Renderer *renderer, const act::Model &act_model) -> std::uni
                 auto mesh_id =
                     model->addAnimatedMesh(vertices, act_submesh.indices, material_id.value(), skin_id.value());
                 submesh_map[act_submesh_id] = mesh_id.has_value() ? AnyMeshId{mesh_id.value()} : std::monostate{};
+
+                if (mesh_id.has_value()) {
+                    node.addAnimMesh(mesh_id.value());
+                }
             },
                 },
                 act_any_submesh);

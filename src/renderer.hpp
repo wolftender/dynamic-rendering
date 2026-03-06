@@ -180,6 +180,7 @@ public:
     static constexpr uint32_t kNumTexturePoolSize = 256;
     static constexpr uint32_t kNumMeshPoolSize = 512;
     static constexpr uint32_t kNumAnimMeshPoolSize = 128;
+    static constexpr uint32_t kVertexBufferAlign = 64;
 
     struct cbFrameHeapBuffer {
         struct cbPointLightData {
@@ -262,7 +263,7 @@ public:
 
         auto storage() -> cbBufferDataType & { return storage_; }
         auto storage() const -> const cbBufferDataType & { return storage_; }
-        auto deviceAddress(uint32_t frame) -> VkDeviceAddress { return buffers_[frame].address; }
+        auto deviceAddress(uint32_t frame) const -> VkDeviceAddress { return buffers_[frame].address; }
 
         auto upload(uint32_t frame) const -> void {
             ::memcpy(buffers_[frame].buffer.cpuMappedPointer(), &storage_, sizeof(cbBufferDataType));
@@ -397,7 +398,9 @@ public:
             std::span<const uint8_t> vertex_buffer;
             std::span<const uint32_t> indices;
 
+            uint32_t vertex_size;
             uint32_t num_vertices;
+
             VkBufferUsageFlags vertex_buffer_flags;
             VkBufferUsageFlags index_buffer_flags;
         };
@@ -495,7 +498,7 @@ public:
         auto operator=(ActorMesh &&) noexcept -> ActorMesh & = default;
 
         auto inputMesh() const -> AnimatedMeshId { return input_mesh_; }
-        auto vertexBuffer() const -> const Buffer & { return output_buffer_; }
+        auto vertexBuffer(uint32_t current_frame) const -> const Buffer & { return output_buffer_[current_frame]; }
         auto transformBuffer() const -> const SharedDataBuffer<cbSkinningBuffer> & { return buffer_; }
 
         auto skinningBuffer() const -> const cbSkinningBuffer & { return buffer_.storage(); }
@@ -510,7 +513,7 @@ public:
         Renderer *renderer_ = nullptr;
 
         AnimatedMeshId input_mesh_;
-        Buffer output_buffer_;
+        std::array<Buffer, kNumFramesInFlight> output_buffer_;
 
         VkDeviceSize output_buffer_size_ = 0;
         size_t num_vertices_ = 0;
@@ -555,6 +558,7 @@ public:
         Mesh::Description desc = {
             .vertex_buffer = {vertex_buffer_ptr, vertex_buffer_size},
             .indices = {index_buffer_ptr, index_buffer_size},
+            .vertex_size = sizeof(StaticVertex),
             .num_vertices = static_cast<uint32_t>(std::ranges::size(vertex_input_range)),
             .vertex_buffer_flags = 0,
             .index_buffer_flags = 0,
@@ -594,8 +598,9 @@ public:
         Mesh::Description desc = {
             .vertex_buffer = {vertex_buffer_ptr, vertex_buffer_size},
             .indices = {index_buffer_ptr, index_buffer_size},
+            .vertex_size = sizeof(SkinnedVertex),
             .num_vertices = static_cast<uint32_t>(std::ranges::size(vertex_input_range)),
-            .vertex_buffer_flags = 0,
+            .vertex_buffer_flags = VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
             .index_buffer_flags = 0,
         };
 

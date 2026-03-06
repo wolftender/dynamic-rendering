@@ -148,7 +148,8 @@ public:
         MemoryHelper(MemoryHelper &&) noexcept = delete;
         auto operator=(MemoryHelper &&) noexcept = delete;
 
-        auto createBuffer(VkBufferUsageFlags usage, std::span<const uint8_t> data) const -> Buffer;
+        auto createBuffer(VkBufferUsageFlags usage, std::span<const uint8_t> data, VkDeviceSize size = 0) const
+            -> Buffer;
         auto createStagingBuffer(VkDeviceSize size) const -> Buffer;
         auto createDeviceBuffer(VkBufferUsageFlags usage, VkDeviceSize size) const -> Buffer;
         auto createSharedBuffer(VkBufferUsageFlags usage, VkDeviceSize size) const -> Buffer;

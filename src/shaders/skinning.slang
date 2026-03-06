@@ -43,4 +43,7 @@ void csMain(
                  bones->inverse_bind[b3] * w3;
 
     output[index].position = mul(T, float4(input[index].position.xyz, 1.0f));
+    output[index].normal = mul(T, float4(input[index].normal.xyz, 0.0f));
+    output[index].uv = float4(input[index].uv.xy, 0.0f, 0.0f);
+    output[index].color = float4(input[index].color.xyz, 1.0f);
 }

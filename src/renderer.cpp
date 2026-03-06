@@ -653,14 +653,17 @@ auto Renderer::Mesh::create(Renderer *renderer, const Description &desc) -> std:
     mesh.renderer_ = renderer;
     const auto &memory = mesh.renderer_->context_->memory();
 
+    const size_t aligned_buffer_size = util::bytes::align_ptr(desc.num_vertices, kVertexBufferAlign) * desc.vertex_size;
+    assert(aligned_buffer_size > desc.vertex_buffer.size_bytes());
+
     mesh.num_vertices_ = desc.num_vertices;
     mesh.num_indices_ = std::size(desc.indices);
 
-    mesh.vertex_buffer_size_ = desc.vertex_buffer.size();
+    mesh.vertex_buffer_size_ = aligned_buffer_size;
     mesh.index_buffer_size_ = desc.indices.size() * sizeof(uint32_t);
 
-    mesh.vertex_buffer_ =
-        memory.createBuffer(VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | desc.vertex_buffer_flags, desc.vertex_buffer);
+    mesh.vertex_buffer_ = memory.createBuffer(
+        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | desc.vertex_buffer_flags, desc.vertex_buffer, aligned_buffer_size);
     mesh.index_bufer_ = memory.createBuffer(
         VK_BUFFER_USAGE_INDEX_BUFFER_BIT | desc.index_buffer_flags,
         std::span<const uint8_t>{reinterpret_cast<const uint8_t *>(desc.indices.data()), mesh.index_buffer_size_});
@@ -764,10 +767,15 @@ auto Renderer::ActorMesh::create(Renderer *renderer, AnimatedMeshId mesh) -> std
     }
 
     ActorMesh actor{renderer, mesh, std::move(bone_buffer.value())};
-    actor.num_vertices_ = base_mesh->numVertices();
+    actor.num_vertices_ = util::bytes::align_ptr(base_mesh->numVertices(), kVertexBufferAlign);
     actor.output_buffer_size_ = actor.num_vertices_ * sizeof(StaticVertex);
-    actor.output_buffer_ = actor.renderer_->context_->memory().createDeviceBuffer(
-        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, actor.output_buffer_size_);
+
+    for (uint32_t i = 0; i < kNumFramesInFlight; ++i) {
+        actor.output_buffer_[i] = actor.renderer_->context_->memory().createDeviceBuffer(
+            VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+            actor.output_buffer_size_);
+    }
 
     return actor;
 }
@@ -1231,6 +1239,15 @@ auto Renderer::frame() -> util::Result {
         }
     }
 
+    struct IndexedDrawCall {
+        VkBuffer vertex_buffer = VK_NULL_HANDLE;
+        VkBuffer index_buffer = VK_NULL_HANDLE;
+        uint32_t num_indices = 0;
+    };
+
+    std::array<IndexedDrawCall, kNumMaxStaticObjects> indexed_draws = {};
+    uint32_t num_indexed_draws = 0;
+
     // update frame data
     auto &scene_buffer = current_frame.scene_buffer;
     auto &scene_buffer_data = scene_buffer->storage();
@@ -1240,26 +1257,75 @@ auto Renderer::frame() -> util::Result {
     scene_buffer_data.view = camera_.view();
     scene_buffer_data.view_inv = camera_.viewInv();
 
-    for (uint32_t i = 0; i < draw_queue_fill_; ++i) {
-        scene_buffer_data.static_objects[i].world = draw_queue_[i]->world_matrix;
+    for (uint32_t i = 0; i < draw_queue_fill_ && num_indexed_draws < kNumMaxStaticObjects; ++i, ++num_indexed_draws) {
+        const auto object_id = num_indexed_draws;
+        scene_buffer_data.static_objects[object_id].world = draw_queue_[i]->world_matrix;
 
         if (draw_queue_[i]->diffuse_map.has_value()) {
             if (nullptr != texture_pool_->refResource(draw_queue_[i]->diffuse_map.value(), current_frame_)) {
-                scene_buffer_data.static_objects[i].diffuse_map =
+                scene_buffer_data.static_objects[object_id].diffuse_map =
                     static_cast<int32_t>(draw_queue_[i]->diffuse_map.value().index());
             }
         } else {
-            scene_buffer_data.static_objects[i].diffuse_map = -1;
+            scene_buffer_data.static_objects[object_id].diffuse_map = -1;
         }
 
         if (draw_queue_[i]->normal_map.has_value()) {
             if (nullptr != texture_pool_->refResource(draw_queue_[i]->normal_map.value(), current_frame_)) {
-                scene_buffer_data.static_objects[i].normal_map =
+                scene_buffer_data.static_objects[object_id].normal_map =
                     static_cast<int32_t>(draw_queue_[i]->normal_map.value().index());
             }
         } else {
-            scene_buffer_data.static_objects[i].normal_map = -1;
+            scene_buffer_data.static_objects[object_id].normal_map = -1;
         }
+
+        auto &draw_call = indexed_draws[object_id];
+        const auto *mesh_ref = mesh_pool_->refResource(draw_queue_[i]->mesh, current_frame_);
+
+        draw_call.vertex_buffer = mesh_ref->vertexBuffer().buffer();
+        draw_call.index_buffer = mesh_ref->indexBuffer().buffer();
+        draw_call.num_indices = mesh_ref->numIndices();
+    }
+
+    // upload all queued compute skinning bone buffers
+    for (uint32_t i = 0; i < skinning_queue_fill_ && num_indexed_draws < kNumMaxStaticObjects;
+         ++i, ++num_indexed_draws) {
+        const auto object_id = num_indexed_draws;
+        scene_buffer_data.static_objects[object_id].world = skinning_queue_[i]->world_matrix;
+
+        if (skinning_queue_[i]->diffuse_map.has_value()) {
+            if (nullptr != texture_pool_->refResource(skinning_queue_[i]->diffuse_map.value(), current_frame_)) {
+                scene_buffer_data.static_objects[object_id].diffuse_map =
+                    static_cast<int32_t>(skinning_queue_[i]->diffuse_map.value().index());
+            }
+        } else {
+            scene_buffer_data.static_objects[object_id].diffuse_map = -1;
+        }
+
+        if (skinning_queue_[i]->normal_map.has_value()) {
+            if (nullptr != texture_pool_->refResource(skinning_queue_[i]->normal_map.value(), current_frame_)) {
+                scene_buffer_data.static_objects[object_id].normal_map =
+                    static_cast<int32_t>(skinning_queue_[i]->normal_map.value().index());
+            }
+        } else {
+            scene_buffer_data.static_objects[object_id].normal_map = -1;
+        }
+
+        const auto actor_id = skinning_queue_[i]->skinned_mesh;
+        auto *actor_ref = actor_mesh_pool_->refResource(actor_id, current_frame_);
+        auto *mesh_ref = anim_mesh_pool_->refResource(actor_ref->inputMesh(), current_frame_);
+
+        if (!actor_ref) {
+            continue;
+        }
+
+        actor_ref->transformBuffer().upload(current_frame_);
+
+        auto &draw_call = indexed_draws[object_id];
+
+        draw_call.vertex_buffer = actor_ref->vertexBuffer(current_frame_).buffer();
+        draw_call.index_buffer = mesh_ref->indexBuffer().buffer();
+        draw_call.num_indices = mesh_ref->numIndices();
     }
 
     auto command_buffer = current_frame.command_buffer;
@@ -1270,24 +1336,41 @@ auto Renderer::frame() -> util::Result {
         .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
     };
 
-    // upload all queued compute skinning bone buffers
-    for (uint32_t i = 0; i < skinning_queue_fill_; ++i) {
-        const auto actor_id = skinning_queue_[i]->skinned_mesh;
-        auto *actor = actor_mesh_pool_->refResource(actor_id, current_frame_);
-
-        if (!actor) {
-            continue;
-        }
-
-        actor->transformBuffer().upload(current_frame_);
-    }
-
     VK_CHECK_ERROR(vkBeginCommandBuffer(command_buffer, &command_buffer_begin_desc));
 
-    // TODO: compute skinning
+    // invoke compute shader skinning
+    vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, skinning_pass_->pipeline());
+
+    ComputeSkinningPass::cbPushConstantBuffer skinning_constants;
+
+    for (uint32_t i = 0; i < skinning_queue_fill_; ++i) {
+        const auto actor_id = skinning_queue_[i]->skinned_mesh;
+        auto *actor = actor_mesh_pool_->getResource(actor_id);
+        auto *input_mesh = anim_mesh_pool_->getResource(actor->inputMesh());
+
+        // pass the buffers using push constants
+        skinning_constants.input_buffer = input_mesh->vertexBuffer().deviceAddress();
+        skinning_constants.output_buffer = actor->vertexBuffer(current_frame_).deviceAddress();
+        skinning_constants.bone_buffer = actor->transformBuffer().deviceAddress(current_frame_);
+
+        const auto num_dispatches = input_mesh->num_vertices_ / kVertexBufferAlign;
+
+        vkCmdPushConstants(
+            command_buffer, skinning_pass_->pipelineLayout(), VK_SHADER_STAGE_COMPUTE_BIT, 0,
+            sizeof(ComputeSkinningPass::cbPushConstantBuffer), &skinning_constants);
+        vkCmdDispatch(command_buffer, num_dispatches, 1, 1);
+    }
 
     // upload buffer data - this also inserts a memory barrier!!
     scene_buffer->upload(command_buffer);
+
+    VkMemoryBarrier2 compute_mem_barrier = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        .srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT,
+        .dstAccessMask = VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT,
+    };
 
     std::array<VkImageMemoryBarrier2, 2> output_barriers = {
         VkImageMemoryBarrier2{
@@ -1319,13 +1402,15 @@ auto Renderer::frame() -> util::Result {
         },
     };
 
-    VkDependencyInfo output_dependency_desc = {
+    VkDependencyInfo render_dependency_desc = {
         .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .memoryBarrierCount = 1,
+        .pMemoryBarriers = &compute_mem_barrier,
         .imageMemoryBarrierCount = static_cast<uint32_t>(output_barriers.size()),
         .pImageMemoryBarriers = output_barriers.data(),
     };
 
-    vkCmdPipelineBarrier2(command_buffer, &output_dependency_desc);
+    vkCmdPipelineBarrier2(command_buffer, &render_dependency_desc);
 
     VkRenderingAttachmentInfo color_attachment_desc = {
         .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
@@ -1382,16 +1467,11 @@ auto Renderer::frame() -> util::Result {
     VkDeviceSize vertex_offset = 0;
     OpaqueGeometryPass::cbPushConstantBuffer push_constants;
 
-    for (uint32_t i = 0; i < draw_queue_fill_; ++i) {
-        const auto &draw_call = draw_queue_[i].value();
-        const auto mesh_ref = mesh_pool_->refResource(draw_call.mesh, current_frame_);
+    for (uint32_t i = 0; i < num_indexed_draws; ++i) {
+        const auto &draw_call = indexed_draws[i];
 
-        if (!mesh_ref) {
-            continue;
-        }
-
-        vkCmdBindVertexBuffers(command_buffer, 0, 1, mesh_ref->vertexBuffer().addrOf(), &vertex_offset);
-        vkCmdBindIndexBuffer(command_buffer, mesh_ref->indexBuffer().buffer(), 0, VK_INDEX_TYPE_UINT32);
+        vkCmdBindVertexBuffers(command_buffer, 0, 1, &draw_call.vertex_buffer, &vertex_offset);
+        vkCmdBindIndexBuffer(command_buffer, draw_call.index_buffer, 0, VK_INDEX_TYPE_UINT32);
 
         push_constants.frame_heap = scene_buffer->deviceAddress();
         push_constants.object_id = i;
@@ -1400,7 +1480,7 @@ auto Renderer::frame() -> util::Result {
             command_buffer, geometry_pass_->pipelineLayout(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
             0, sizeof(OpaqueGeometryPass::cbPushConstantBuffer), &push_constants);
 
-        vkCmdDrawIndexed(command_buffer, mesh_ref->numIndices(), 1, 0, 0, 0);
+        vkCmdDrawIndexed(command_buffer, draw_call.num_indices, 1, 0, 0, 0);
     }
 
     vkCmdEndRendering(command_buffer);
@@ -1426,6 +1506,7 @@ auto Renderer::frame() -> util::Result {
     vkCmdPipelineBarrier2(command_buffer, &dependency_present);
     vkEndCommandBuffer(command_buffer);
 
+    skinning_queue_fill_ = 0;
     draw_queue_fill_ = 0;
 
     VkPipelineStageFlags wait_stages = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;

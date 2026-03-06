@@ -785,10 +785,17 @@ auto Context::MemoryHelper::submitCommandBuffer(VkSemaphore semaphore, uint64_t 
     LogInfo("vulkan: memory helper end command submission logic");
 }
 
-auto Context::MemoryHelper::createBuffer(VkBufferUsageFlags usage, std::span<const uint8_t> data) const -> Buffer {
+auto Context::MemoryHelper::createBuffer(
+    VkBufferUsageFlags usage, std::span<const uint8_t> data, VkDeviceSize size) const -> Buffer {
+    if (size == 0) {
+        size = data.size();
+    }
+
+    assert(size >= data.size() && "invalid buffer size requested");
+
     VkBufferCreateInfo create_info = {
         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-        .size = data.size(),
+        .size = size,
         .usage = usage | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
     };
