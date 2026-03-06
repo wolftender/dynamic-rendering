@@ -38,7 +38,7 @@ auto Model::deleteResource<Renderer::AnimatedMeshId>(Renderer *renderer, Rendere
 }
 
 auto Model::Node::addMesh(MeshId id) -> void {
-    const auto is_first_drawable = (meshes_.size() == 0) || (animated_meshes_.size() == 0);
+    const auto is_first_drawable = (meshes_.size() == 0) && (animated_meshes_.size() == 0);
     meshes_.push_back(std::move(id));
 
     if (is_first_drawable) {
@@ -47,7 +47,7 @@ auto Model::Node::addMesh(MeshId id) -> void {
 }
 
 auto Model::Node::addAnimMesh(AnimatedMeshId id) -> void {
-    const auto is_first_drawable = (meshes_.size() == 0) || (animated_meshes_.size() == 0);
+    const auto is_first_drawable = (meshes_.size() == 0) && (animated_meshes_.size() == 0);
     animated_meshes_.push_back(std::move(id));
 
     if (is_first_drawable) {
