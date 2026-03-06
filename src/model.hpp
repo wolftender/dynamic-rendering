@@ -414,11 +414,13 @@ public:
     auto addNode(NodeId parent, std::string_view name) -> std::optional<NodeId>;
 
     auto getMesh(MeshId handle) -> Mesh *;
+    auto getAnimMesh(AnimatedMeshId handle) -> AnimatedMesh *;
     auto getNode(NodeId handle) -> Node *;
     auto getTexture(TextureId handle) -> Texture *;
     auto getMaterial(MaterialId handle) -> Material *;
 
     auto getMesh(MeshId handle) const -> const Mesh *;
+    auto getAnimMesh(AnimatedMeshId handle) const -> const AnimatedMesh *;
     auto getNode(NodeId handle) const -> const Node *;
     auto getTexture(TextureId handle) const -> const Texture *;
     auto getMaterial(MaterialId handle) const -> const Material *;
@@ -432,6 +434,21 @@ public:
 
     template <std::invocable<Mesh &> F> auto withMeshMut(MeshId handle, F consumer) -> void {
         auto mesh = getMesh(handle);
+        if (mesh) {
+            consumer(*mesh);
+        }
+    }
+
+    template <std::invocable<const AnimatedMesh &> F>
+    auto withAnimMesh(AnimatedMeshId handle, F consumer) const -> void {
+        auto mesh = getAnimMesh(handle);
+        if (mesh) {
+            consumer(*mesh);
+        }
+    }
+
+    template <std::invocable<AnimatedMesh &> F> auto withAnimMeshMut(AnimatedMeshId handle, F consumer) -> void {
+        auto mesh = getAnimMesh(handle);
         if (mesh) {
             consumer(*mesh);
         }

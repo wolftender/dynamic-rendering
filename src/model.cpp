@@ -262,6 +262,14 @@ auto Model::getMesh(MeshId handle) -> Mesh * {
     return &meshes_[handle.index()];
 }
 
+auto Model::getAnimMesh(AnimatedMeshId handle) -> AnimatedMesh * {
+    if (handle.index() >= animated_meshes_.size()) {
+        return nullptr;
+    }
+
+    return &animated_meshes_[handle.index()];
+}
+
 auto Model::getNode(NodeId handle) -> Node * {
     if (handle.index() >= nodes_.size()) {
         return nullptr;
@@ -292,6 +300,14 @@ auto Model::getMesh(MeshId handle) const -> const Mesh * {
     }
 
     return &meshes_[handle.index()];
+}
+
+auto Model::getAnimMesh(AnimatedMeshId handle) const -> const AnimatedMesh * {
+    if (handle.index() >= animated_meshes_.size()) {
+        return nullptr;
+    }
+
+    return &animated_meshes_[handle.index()];
 }
 
 auto Model::getNode(NodeId handle) const -> const Node * {
