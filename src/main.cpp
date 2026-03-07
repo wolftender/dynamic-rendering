@@ -362,7 +362,8 @@ auto ApplicationState::run() -> util::Result {
         glm::fvec3{2.0f, 2.0f, 2.0f},
     };
 
-    const auto bind_pose = test_model_->createPose();
+    const auto animations = test_model_->makeAnimationList();
+    auto controller = test_model_->createController(animations.front());
 
     while (!glfwWindowShouldClose(window_handle_)) {
         const auto now = Clock::now();
@@ -371,6 +372,8 @@ auto ApplicationState::run() -> util::Result {
         const auto delta_time = static_cast<float>(elapsed) * kMicrosecondsToSeconds;
         last_frame = now;
         simulation_time = simulation_time + delta_time;
+
+        controller.integrate(delta_time);
 
         const glm::fvec3 camera_position = {
             kCameraRadius * ::cosf(simulation_time), kCameraRadius, kCameraRadius * ::sinf(simulation_time)};
@@ -389,7 +392,7 @@ auto ApplicationState::run() -> util::Result {
         }
 
         test_model_->render(
-            *renderer_.get(), *bind_pose.get(), glm::scale(glm::fmat4x4{1.0f}, glm::fvec3{250.0f, 250.0f, 250.0f}));
+            *renderer_.get(), controller.pose(), glm::scale(glm::fmat4x4{1.0f}, glm::fvec3{350.0f, 350.0f, 350.0f}));
 
         if (util::Result::eSuccess != renderer_->frame()) {
             LogError("failed to render frame");

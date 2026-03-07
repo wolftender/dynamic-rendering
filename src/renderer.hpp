@@ -641,6 +641,33 @@ public:
         consumer(*mesh);
     }
 
+    template <std::invocable<const Mesh &> F> auto withAnimMesh(AnimatedMeshId handle, F consumer) const {
+        auto anim_mesh = getAnimMesh(handle);
+        if (!anim_mesh) {
+            return;
+        }
+
+        consumer(*anim_mesh);
+    }
+
+    template <std::invocable<const ActorMesh &> F> auto withActorMesh(ActorMeshId handle, F consumer) const {
+        auto actor_mesh = getActorMesh(handle);
+        if (!actor_mesh) {
+            return;
+        }
+
+        consumer(*actor_mesh);
+    }
+
+    template <std::invocable<ActorMesh &> F> auto withActorMeshMut(ActorMeshId handle, F consumer) {
+        auto actor_mesh = getActorMesh(handle);
+        if (!actor_mesh) {
+            return;
+        }
+
+        consumer(*actor_mesh);
+    }
+
     auto deleteMesh(MeshId handle) { unrefMesh(handle); }
     auto deleteTexture(TextureId handle) { unrefTexture(handle); }
     auto deleteAnimMesh(AnimatedMeshId handle) { unrefAnimMesh(handle); }

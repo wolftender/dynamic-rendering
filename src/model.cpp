@@ -70,6 +70,10 @@ auto Model::Pose::Node::setRotation(const glm::fquat &rotation) -> void {
     pose_->recomputeTransformSubtree(self_);
 }
 
+auto Model::Pose::Node::setTranslationSilent(const glm::fvec3 &translation) -> void { translation_ = translation; }
+auto Model::Pose::Node::setScaleSilent(const glm::fvec3 &scale) -> void { scale_ = scale; }
+auto Model::Pose::Node::setRotationSilent(const glm::fquat &rotation) -> void { rotation_ = rotation; }
+
 auto Model::Pose::Node::setTransform(const glm::fvec3 &translation, const glm::fvec3 &scale, const glm::fquat &rotation)
     -> void {
     translation_ = translation;
@@ -254,6 +258,11 @@ auto Model::addNode(NodeId parent, std::string_view name) -> std::optional<NodeI
     return id;
 }
 
+auto Model::addAnimation(Animation &&animation) -> std::optional<AnimationId> {
+    animations_.emplace_back(std::move(animation));
+    return AnimationId{static_cast<uint32_t>(animations_.size())};
+}
+
 auto Model::getMesh(MeshId handle) -> Mesh * {
     if (handle.index() >= meshes_.size()) {
         return nullptr;
@@ -292,6 +301,14 @@ auto Model::getMaterial(MaterialId handle) -> Material * {
     }
 
     return &materials_[handle.index()];
+}
+
+auto Model::getAnimation(AnimationId handle) -> Animation * {
+    if (handle.index() >= materials_.size()) {
+        return nullptr;
+    }
+
+    return &animations_[handle.index()];
 }
 
 auto Model::getMesh(MeshId handle) const -> const Mesh * {
@@ -334,6 +351,14 @@ auto Model::getMaterial(MaterialId handle) const -> const Material * {
     return &materials_[handle.index()];
 }
 
+auto Model::getAnimation(AnimationId handle) const -> const Animation * {
+    if (handle.index() >= materials_.size()) {
+        return nullptr;
+    }
+
+    return &animations_[handle.index()];
+}
+
 auto Model::render(Renderer &renderer, const Pose &pose, const glm::fmat4x4 &world) const -> void {
     if (&renderer != renderer_) {
         return;
@@ -368,8 +393,21 @@ auto Model::render(Renderer &renderer, const Pose &pose, const glm::fmat4x4 &wor
             const auto &anim_mesh = animated_meshes_[anim_mesh_id.index()];
             const auto &material = materials_[anim_mesh.material().index()];
 
+            // this is an animated mesh -> we need to update the matrices in the buffer
+            const auto actor_mesh_id = pose.actor_meshes_[anim_mesh_id.index()];
+            const auto &skin = skins_[anim_mesh.skin_.index()];
+            renderer_->withActorMeshMut(actor_mesh_id, [&](Renderer::ActorMesh &actor_mesh) {
+                for (uint32_t bone_id = 0; bone_id < skin.nodes().size(); ++bone_id) {
+                    const auto &bone = skin.nodes()[bone_id];
+                    const auto &bone_node = pose.nodes_[bone.node.index()];
+                    glm::fmat4x4 joint_matrix = bone.inverse_bind * bone_node.transform();
+
+                    actor_mesh.skinningBuffer().bones[bone_id] = joint_matrix;
+                }
+            });
+
             Renderer::SkinnedDrawDescription desc = {
-                .skinned_mesh = pose.actor_meshes_[anim_mesh_id.index()],
+                .skinned_mesh = actor_mesh_id,
                 .world_matrix = matrix,
             };
 
@@ -385,6 +423,168 @@ auto Model::render(Renderer &renderer, const Pose &pose, const glm::fmat4x4 &wor
         }
     }
 }
+
+auto Model::Controller::setAnimation(AnimationId id) -> void {
+    animation_ = id;
+    time_ = 0.0f;
+    translation_data_.clear();
+    rotation_data_.clear();
+    scale_data_.clear();
+
+    initializeAnimationData();
+}
+
+auto Model::Controller::integrate(float delta_time) -> void {
+    time_ = time_ + delta_time;
+
+    model_->withAnimation(animation_, [&](const Animation &animation) {
+        if (loop_ && time_ > animation.duration()) {
+            time_ = std::fmod(time_, animation.duration());
+            resetAnimationData(animation);
+        }
+
+        updateAnimation(animation);
+    });
+}
+
+auto Model::Controller::seek(float time) -> void {
+    model_->withAnimation(animation_, [&](const Animation &animation) {
+        time_ = loop_ ? std::fmod(std::max(0.0f, time), animation.duration()) : std::max(0.0f, time);
+        resetAnimationData(animation);
+        updateAnimation(animation);
+    });
+}
+
+auto Model::Controller::resetAnimationData(const Animation &animation) -> void {
+    animation.iterateChannels<Animation::TargetProperty::eTranslation>(
+        [&](uint32_t channel_id, const TranslationChannel &channel) {
+        resetChannelData(translation_data_, channel_id, channel);
+    });
+
+    animation.iterateChannels<Animation::TargetProperty::eRotation>(
+        [&](uint32_t channel_id, const RotationChhannel &channel) {
+        resetChannelData(rotation_data_, channel_id, channel);
+    });
+
+    animation.iterateChannels<Animation::TargetProperty::eScale>(
+        [&](uint32_t channel_id, const ScaleChannel &channel) { resetChannelData(scale_data_, channel_id, channel); });
+}
+
+auto Model::Controller::initializeAnimationData() -> void {
+    model_->withAnimation(animation_, [&](const Animation &animation) {
+        translation_data_.resize(animation.numTranslationChannels());
+        rotation_data_.resize(animation.numRotationChannels());
+        scale_data_.resize(animation.numScaleChannels());
+
+        resetAnimationData(animation);
+    });
+}
+
+using KeyframeVec3 = Model::Animation::template Keyframe<glm::fvec3>;
+using KeyframeQuat = Model::Animation::template Keyframe<glm::fquat>;
+
+inline auto interpolate(
+    Model::Animation::InterpolationMode mode, const KeyframeVec3 &k0, const KeyframeVec3 &k1, float t,
+    glm::fvec3 *result) -> void {
+    const auto &v0 = k0.value;
+    const auto &v1 = k1.value;
+    const auto t0 = k0.time;
+    const auto t1 = k1.time;
+    float l = (t1 - t0);
+    float _t = (glm::clamp(t, t0, t1) - t0) / l;
+
+    switch (mode) {
+    case Model::Animation::InterpolationMode::eLinear:
+        *result = glm::mix(v0, v1, _t);
+        break;
+    case Model::Animation::InterpolationMode::eCubic:
+    case Model::Animation::InterpolationMode::eStep:
+        *result = v1;
+        break;
+    }
+}
+
+inline auto interpolate(
+    Model::Animation::InterpolationMode mode, const KeyframeQuat &k0, const KeyframeQuat &k1, float t,
+    glm::fquat *result) -> void {
+    const auto &v0 = k0.value;
+    const auto &v1 = k1.value;
+    const auto t0 = k0.time;
+    const auto t1 = k1.time;
+    float l = (t1 - t0);
+    float _t = (glm::clamp(t, t0, t1) - t0) / l;
+
+    switch (mode) {
+    case Model::Animation::InterpolationMode::eLinear:
+        *result = glm::slerp(v0, v1, _t);
+        break;
+    case Model::Animation::InterpolationMode::eCubic:
+    case Model::Animation::InterpolationMode::eStep:
+        *result = v1;
+        break;
+    }
+}
+
+auto Model::Controller::updateAnimationChannel(uint32_t channel_id, const TranslationChannel &channel) -> void {
+    updateAnimationChannel(
+        translation_data_, channel_id, channel,
+        [&](const KeyframeVec3 &k1, const KeyframeVec3 &k2, float t, Pose::Node &node) {
+        glm::fvec3 result = node.translation();
+        interpolate(channel.interpolation(), k1, k2, t, &result);
+
+        node.setTranslationSilent(result);
+    });
+}
+
+auto Model::Controller::updateAnimationChannel(uint32_t channel_id, const RotationChhannel &channel) -> void {
+    updateAnimationChannel(
+        rotation_data_, channel_id, channel,
+        [&](const KeyframeQuat &k1, const KeyframeQuat &k2, float t, Pose::Node &node) {
+        glm::fquat result = node.rotation();
+        interpolate(channel.interpolation(), k1, k2, t, &result);
+
+        node.setRotationSilent(result);
+    });
+}
+
+auto Model::Controller::updateAnimationChannel(uint32_t channel_id, const ScaleChannel &channel) -> void {
+    updateAnimationChannel(
+        scale_data_, channel_id, channel,
+        [&](const KeyframeVec3 &k1, const KeyframeVec3 &k2, float t, Pose::Node &node) {
+        glm::fvec3 result = node.scale();
+        interpolate(channel.interpolation(), k1, k2, t, &result);
+
+        node.setScaleSilent(result);
+    });
+}
+
+auto Model::Controller::updateAnimation(const Animation &animation) -> void {
+    animation.iterateChannels<Animation::TargetProperty::eTranslation>(
+        [&](uint32_t channel_id, const TranslationChannel &channel) { updateAnimationChannel(channel_id, channel); });
+
+    animation.iterateChannels<Animation::TargetProperty::eRotation>(
+        [&](uint32_t channel_id, const RotationChhannel &channel) { updateAnimationChannel(channel_id, channel); });
+
+    animation.iterateChannels<Animation::TargetProperty::eScale>(
+        [&](uint32_t channel_id, const ScaleChannel &channel) { updateAnimationChannel(channel_id, channel); });
+
+    pose_->recomputeTransformSubtree(pose_->root());
+}
+
+inline auto convertInterpolation(act::AnimationInterpolationMode mode) -> Model::Animation::InterpolationMode {
+    switch (mode) {
+    case act::AnimationInterpolationMode::eStep:
+        return Model::Animation::InterpolationMode::eStep;
+    case act::AnimationInterpolationMode::eLinear:
+        return Model::Animation::InterpolationMode::eLinear;
+    case act::AnimationInterpolationMode::eCubicSpline:
+        return Model::Animation::InterpolationMode::eCubic;
+    default:
+        return Model::Animation::InterpolationMode::eStep;
+    }
+}
+
+auto Model::createController(AnimationId animation) -> Controller { return Controller{this, animation}; }
 
 auto Model::fromAct(Renderer *renderer, const act::Model &act_model) -> std::unique_ptr<Model> {
     std::unique_ptr<Model> model{new (std::nothrow) Model(renderer)};
@@ -582,6 +782,82 @@ auto Model::fromAct(Renderer *renderer, const act::Model &act_model) -> std::uni
                 },
                 act_any_submesh);
         }
+    }
+
+    // loading animations
+    for (uint32_t act_anim_id = 0; act_anim_id < act_model.animations.size(); ++act_anim_id) {
+        const auto &act_anim = act_model.animations[act_anim_id];
+
+        Model::Animation animation{fmt::format("act_anim_{}", act_anim_id)};
+        for (const auto act_channel_id : act_anim.channel_ids) {
+            const auto &act_channel = act_model.animation_channels[act_channel_id];
+            std::visit(
+                util::overload{
+                    [&](const act::Model::TranslationAnimationChannel &act_channel) {
+                if (!node_map[act_channel.node_id].has_value()) {
+                    return;
+                }
+
+                const auto node_id = node_map[act_channel.node_id].value();
+                Animation::TranslationChannel channel{node_id};
+
+                channel.setInterpolation(convertInterpolation(act_channel.interpolation));
+
+                for (const auto &act_keyframe : act_channel.keyframes) {
+                    channel.keyframes().emplace_back(
+                        Animation::TranslationChannel::KeyframeType{
+                            .value = act_keyframe.value,
+                            .time = act_keyframe.time,
+                        });
+                }
+
+                animation.appendChannel(std::move(channel));
+            },
+                    [&](const act::Model::RotationAnimationChannel &act_channel) {
+                if (!node_map[act_channel.node_id].has_value()) {
+                    return;
+                }
+
+                const auto node_id = node_map[act_channel.node_id].value();
+                Animation::RotationChannel channel{node_id};
+
+                channel.setInterpolation(convertInterpolation(act_channel.interpolation));
+
+                for (const auto &act_keyframe : act_channel.keyframes) {
+                    channel.keyframes().emplace_back(
+                        Animation::RotationChannel::KeyframeType{
+                            .value = act_keyframe.value,
+                            .time = act_keyframe.time,
+                        });
+                }
+
+                animation.appendChannel(std::move(channel));
+            },
+                    [&](const act::Model::ScaleAnimationChannel &act_channel) {
+                if (!node_map[act_channel.node_id].has_value()) {
+                    return;
+                }
+
+                const auto node_id = node_map[act_channel.node_id].value();
+                Animation::ScaleChannel channel{node_id};
+
+                channel.setInterpolation(convertInterpolation(act_channel.interpolation));
+
+                for (const auto &act_keyframe : act_channel.keyframes) {
+                    channel.keyframes().emplace_back(
+                        Animation::ScaleChannel::KeyframeType{
+                            .value = act_keyframe.value,
+                            .time = act_keyframe.time,
+                        });
+                }
+
+                animation.appendChannel(std::move(channel));
+            },
+                },
+                act_channel);
+        }
+
+        model->addAnimation(std::move(animation));
     }
 
     return model;

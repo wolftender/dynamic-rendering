@@ -19,7 +19,7 @@ struct StaticVertex {
 static const uint32_t kNumMaxBonesPerObject = 200;
 
 struct BoneMatrixBuffer {
-    float4x4 inverse_bind[kNumMaxBonesPerObject];
+    float4x4 transform[kNumMaxBonesPerObject];
 }
 
 [shader("compute")]
@@ -39,8 +39,8 @@ void csMain(
     float w2 = input[index].weights.z;
     float w3 = input[index].weights.w;
 
-    float4x4 T = bones->inverse_bind[b0] * w0 + bones->inverse_bind[b1] * w1 + bones->inverse_bind[b2] * w2 +
-                 bones->inverse_bind[b3] * w3;
+    float4x4 T =
+        bones->transform[b0] * w0 + bones->transform[b1] * w1 + bones->transform[b2] * w2 + bones->transform[b3] * w3;
 
     output[index].position = mul(T, float4(input[index].position.xyz, 1.0f));
     output[index].normal = mul(T, float4(input[index].normal.xyz, 0.0f));
