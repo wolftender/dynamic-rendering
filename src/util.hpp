@@ -53,6 +53,44 @@ template <typename T> inline constexpr auto vecCharPtrMut(std::vector<T> &v) -> 
 
 enum class Result { eFailure = 0, eSuccess = 1 };
 
+template <typename T, size_t kCapacity> class FixedSizeQueue final {
+public:
+    FixedSizeQueue() = default;
+    ~FixedSizeQueue() = default;
+
+    auto capacity() const -> size_t { return kCapacity; }
+    auto fill() const -> size_t { return fill_; }
+    auto empty() const -> bool { return 0ull == fill_; }
+    auto full() const -> bool { return kCapacity == fill_; }
+
+    auto push(T v) -> void {
+        if (full()) {
+            return;
+        }
+
+        const auto index = (begin_ + fill_) % kCapacity;
+        storage_[index] = std::move(v);
+
+        fill_++;
+    }
+
+    auto pop() -> std::optional<T> {
+        if (empty()) {
+            return std::nullopt;
+        }
+
+        auto value = std::move(storage_[begin_]);
+        begin_ = (begin_ + 1) % kCapacity;
+        fill_--;
+
+        return value;
+    }
+
+private:
+    size_t begin_ = 0ull, fill_ = 0ull;
+    std::array<T, kCapacity> storage_;
+};
+
 namespace bytes {
 
 // clang-format off
@@ -67,6 +105,8 @@ using s64   = int64_t;
 using f32   = float;
 using f64   = double;
 // clang-format on
+
+template <typename T> auto align_ptr(T size, T align) -> T { return (size + align - 1) & ~(align - 1); }
 
 template <typename T>
 concept IsPrimitiveType = std::same_as<T, u8> || std::same_as<T, u16> || std::same_as<T, u32> || std::same_as<T, u64> ||
@@ -107,8 +147,8 @@ public:
     }
 
     template <typename T = f32> auto readVec2() -> std::optional<glm::vec<2, T>> {
-        const auto x = read<f32>();
-        const auto y = read<f32>();
+        const auto x = read<T>();
+        const auto y = read<T>();
 
         if (!x.has_value() || !y.has_value()) {
             return std::nullopt;
@@ -118,9 +158,9 @@ public:
     }
 
     template <typename T = f32> auto readVec3() -> std::optional<glm::vec<3, T>> {
-        const auto x = read<f32>();
-        const auto y = read<f32>();
-        const auto z = read<f32>();
+        const auto x = read<T>();
+        const auto y = read<T>();
+        const auto z = read<T>();
 
         if (!x.has_value() || !y.has_value() || !z.has_value()) {
             return std::nullopt;
@@ -130,10 +170,10 @@ public:
     }
 
     template <typename T = f32> auto readVec4() -> std::optional<glm::vec<4, T>> {
-        const auto x = read<f32>();
-        const auto y = read<f32>();
-        const auto z = read<f32>();
-        const auto w = read<f32>();
+        const auto x = read<T>();
+        const auto y = read<T>();
+        const auto z = read<T>();
+        const auto w = read<T>();
 
         if (!x.has_value() || !y.has_value() || !z.has_value() || !w.has_value()) {
             return std::nullopt;
@@ -143,16 +183,16 @@ public:
     }
 
     template <typename T = f32> auto readQuat() -> std::optional<glm::qua<T>> {
-        const auto x = read<f32>();
-        const auto y = read<f32>();
-        const auto z = read<f32>();
-        const auto w = read<f32>();
+        const auto x = read<T>();
+        const auto y = read<T>();
+        const auto z = read<T>();
+        const auto w = read<T>();
 
         if (!x.has_value() || !y.has_value() || !z.has_value() || !w.has_value()) {
             return std::nullopt;
         }
 
-        return glm::qua<T>{*x, *y, *z, *w};
+        return glm::qua<T>{*w, *x, *y, *z}; // this constructor has order WXYZ
     }
 
 private:

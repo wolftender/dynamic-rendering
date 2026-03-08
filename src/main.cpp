@@ -84,6 +84,7 @@ private:
         ShaderLoaderImpl(const asset::ArchiveReader *archive);
         ~ShaderLoaderImpl() = default;
 
+        auto loadSkinningPassShader() const -> std::optional<std::vector<uint32_t>> override;
         auto loadGeometryPassShader() const -> std::optional<std::vector<uint32_t>> override;
 
     private:
@@ -135,6 +136,28 @@ auto main([[maybe_unused]] int argc, [[maybe_unused]] char **argv) -> int {
 }
 
 ApplicationState::ShaderLoaderImpl::ShaderLoaderImpl(const asset::ArchiveReader *archive) : archive_{archive} {}
+
+auto ApplicationState::ShaderLoaderImpl::loadSkinningPassShader() const -> std::optional<std::vector<uint32_t>> {
+    const auto buffer = archive_->getFileContent("skinning.spv");
+    if (!buffer) {
+        LogError("failed to load skinning.spv");
+        return std::nullopt;
+    }
+
+    constexpr auto kWordSize = sizeof(uint32_t);
+    if (buffer->size() % kWordSize != 0) {
+        LogError("invalid alignment of spir-v bytecode");
+        return std::nullopt;
+    }
+
+    const auto size_in_words = buffer->size() / kWordSize;
+    std::vector<uint32_t> spv_buffer;
+
+    spv_buffer.resize(size_in_words);
+    ::memcpy(spv_buffer.data(), buffer->data(), size_in_words * sizeof(uint32_t));
+
+    return spv_buffer;
+}
 
 auto ApplicationState::ShaderLoaderImpl::loadGeometryPassShader() const -> std::optional<std::vector<uint32_t>> {
     const auto buffer = archive_->getFileContent("shader.spv");
@@ -339,7 +362,9 @@ auto ApplicationState::run() -> util::Result {
         glm::fvec3{2.0f, 2.0f, 2.0f},
     };
 
-    const auto bind_pose = test_model_->createPose();
+    const auto animations = test_model_->makeAnimationList();
+    auto controller = test_model_->createController(animations.front());
+    auto bind_pose = test_model_->createPose();
 
     while (!glfwWindowShouldClose(window_handle_)) {
         const auto now = Clock::now();
@@ -349,24 +374,41 @@ auto ApplicationState::run() -> util::Result {
         last_frame = now;
         simulation_time = simulation_time + delta_time;
 
+        controller.integrate(delta_time);
+
         const glm::fvec3 camera_position = {
             kCameraRadius * ::cosf(simulation_time), kCameraRadius, kCameraRadius * ::sinf(simulation_time)};
 
-        renderer_->camera().setPosition(camera_position);
+        renderer_->camera().setPosition(glm::fvec3{0.0f, 0.0f, 4.0f});
 
-        for (const auto &position : kCubePositions) {
-            graphics::Renderer::OpaqueDrawDescription draw_desc = {
-                .mesh = cube_mesh_.value(),
-                .world_matrix = glm::fmat4x4{1.0f},
-            };
+        // test_model_->iterateNodes([&](graphics::Model::NodeId id, [[maybe_unused]] const auto &node) {
+        //     const auto &pose_node = *controller.pose().getNode(id);
 
-            draw_desc.world_matrix =
-                glm::scale(glm::translate(draw_desc.world_matrix, position), glm::fvec3{0.5f, 0.5f, 0.5f});
-            renderer_->drawOpaqueMesh(std::move(draw_desc));
-        }
+        //     glm::fmat4x4 s1 = glm::scale(glm::fmat4x4{1.0f}, glm::fvec3{0.0001f, 0.0005f, 0.0001f});
+        //     glm::fmat4x4 s2 = glm::scale(glm::fmat4x4{1.0f}, glm::fvec3{3.5f, 3.5f, 3.5f});
 
-        test_model_->render(
-            *renderer_.get(), *bind_pose.get(), glm::scale(glm::fmat4x4{1.0f}, glm::fvec3{250.0f, 250.0f, 250.0f}));
+        //     glm::fmat4x4 world_matrix = s2 * pose_node.transform() * s1;
+
+        //     graphics::Renderer::OpaqueDrawDescription draw_desc = {
+        //         .mesh = cube_mesh_.value(),
+        //         .world_matrix = world_matrix,
+        //     };
+
+        //     renderer_->drawOpaqueMesh(std::move(draw_desc));
+        // });
+
+        // for (const auto &position : kCubePositions) {
+        //     graphics::Renderer::OpaqueDrawDescription draw_desc = {
+        //         .mesh = cube_mesh_.value(),
+        //         .world_matrix = glm::fmat4x4{1.0f},
+        //     };
+
+        //     draw_desc.world_matrix =
+        //         glm::scale(glm::translate(draw_desc.world_matrix, position), glm::fvec3{0.5f, 0.5f, 0.5f});
+        //     renderer_->drawOpaqueMesh(std::move(draw_desc));
+        // }
+
+        test_model_->render(*renderer_.get(), *bind_pose, glm::scale(glm::fmat4x4{1.0f}, glm::fvec3{3.5f, 3.5f, 3.5f}));
 
         if (util::Result::eSuccess != renderer_->frame()) {
             LogError("failed to render frame");

@@ -1,4 +1,6 @@
 #pragma once
+#include <algorithm>
+
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 
@@ -7,18 +9,24 @@
 
 namespace graphics {
 
+template <typename T>
+concept AnimationPropertyType = std::convertible_to<T, glm::fvec3> || std::convertible_to<T, glm::fquat>;
+
 class Model final {
     struct MeshTag {};
     struct NodeTag {};
     struct TextureTag {};
     struct MaterialTag {};
+    struct SkinTag {};
+    struct AnimatedMeshTag {};
+    struct AnimationTag {};
 
-    template <typename T> static auto getResource(Renderer *renderer, Renderer::ResourceId<T> handle) -> const T *;
-    template <typename T> static auto deleteResource(Renderer *renderer, Renderer::ResourceId<T> handle) -> void;
+    template <typename T> static auto getResource(Renderer *renderer, T handle) -> const T::Resource *;
+    template <typename T> static auto deleteResource(Renderer *renderer, T handle) -> void;
 
     template <typename T> class RendererResource final {
     public:
-        RendererResource(Renderer *renderer, Renderer::ResourceId<T> handle) : renderer_{renderer}, handle_{handle} {}
+        RendererResource(Renderer *renderer, T handle) : renderer_{renderer}, handle_{handle} {}
         ~RendererResource() noexcept {
             if (handle_.has_value() && renderer_) {
                 Model::deleteResource(renderer_, handle_.value());
@@ -56,11 +64,11 @@ class Model final {
             return nullptr;
         }
 
-        auto id() const -> Renderer::ResourceId<T> { return handle_.value(); }
+        auto id() const -> T { return handle_.value(); }
 
     private:
         Renderer *renderer_ = nullptr;
-        std::optional<Renderer::ResourceId<T>> handle_;
+        std::optional<T> handle_;
     };
 
 public:
@@ -84,6 +92,9 @@ public:
     using NodeId = Id<NodeTag>;
     using TextureId = Id<TextureTag>;
     using MaterialId = Id<MaterialTag>;
+    using SkinId = Id<SkinTag>;
+    using AnimatedMeshId = Id<AnimatedMeshTag>;
+    using AnimationId = Id<AnimationTag>;
 
     class Texture final {
     public:
@@ -96,13 +107,14 @@ public:
         auto operator=(Texture &&t) noexcept -> Texture & = default;
 
         auto model() const -> const Model & { return *model_; }
-        auto handle() const -> const RendererResource<Renderer::Texture> & { return handle_; }
+        auto handle() const -> const RendererResource<Renderer::TextureId> & { return handle_; }
 
     private:
-        Texture(Model *model, RendererResource<Renderer::Texture> handle) : model_{model}, handle_{std::move(handle)} {}
+        Texture(Model *model, RendererResource<Renderer::TextureId> handle)
+            : model_{model}, handle_{std::move(handle)} {}
 
         Model *model_ = nullptr;
-        RendererResource<Renderer::Texture> handle_;
+        RendererResource<Renderer::TextureId> handle_;
 
         friend class Model;
     };
@@ -118,16 +130,66 @@ public:
         auto operator=(Mesh &&t) noexcept -> Mesh & = default;
 
         auto model() const -> const Model & { return *model_; }
-        auto handle() const -> const RendererResource<Renderer::Mesh> & { return handle_; }
+        auto handle() const -> const RendererResource<Renderer::MeshId> & { return handle_; }
         auto material() const -> MaterialId { return material_; }
 
     private:
-        Mesh(Model *model, RendererResource<Renderer::Mesh> handle, MaterialId material)
+        Mesh(Model *model, RendererResource<Renderer::MeshId> handle, MaterialId material)
             : model_{model}, handle_{std::move(handle)}, material_{material} {}
 
         Model *model_ = nullptr;
-        RendererResource<Renderer::Mesh> handle_;
+        RendererResource<Renderer::MeshId> handle_;
         MaterialId material_;
+
+        friend class Model;
+    };
+
+    class Skin final {
+    public:
+        struct SkinNode {
+            NodeId node;
+            glm::fmat4x4 inverse_bind;
+        };
+
+        Skin() = default;
+
+        template <util::TypedContiguousRange<SkinNode> R>
+        Skin(R &nodes) : nodes_{std::ranges::begin(nodes), std::ranges::end(nodes)} {}
+
+        auto addNodeRef(NodeId node, const glm::fmat4x4 &inverse_bind) -> void {
+            nodes_.push_back({node, inverse_bind});
+        }
+
+        auto addNodeRef(SkinNode node) -> void { nodes_.emplace_back(node); }
+        auto nodes() const -> const std::vector<SkinNode> & { return nodes_; }
+
+    private:
+        std::vector<SkinNode> nodes_;
+    };
+
+    class AnimatedMesh final {
+    public:
+        ~AnimatedMesh() noexcept = default;
+
+        AnimatedMesh(const AnimatedMesh &) = delete;
+        auto operator=(const AnimatedMesh &) = delete;
+
+        AnimatedMesh(AnimatedMesh &&t) noexcept = default;
+        auto operator=(AnimatedMesh &&t) noexcept -> AnimatedMesh & = default;
+
+        auto model() const -> const Model & { return *model_; }
+        auto handle() const -> const RendererResource<Renderer::AnimatedMeshId> & { return handle_; }
+        auto material() const -> MaterialId { return material_; }
+        auto skin() const -> SkinId { return skin_; }
+
+    private:
+        AnimatedMesh(Model *model, RendererResource<Renderer::AnimatedMeshId> handle, MaterialId material, SkinId skin)
+            : model_{model}, handle_{std::move(handle)}, material_{material}, skin_{std::move(skin)} {}
+
+        Model *model_ = nullptr;
+        RendererResource<Renderer::AnimatedMeshId> handle_;
+        MaterialId material_;
+        SkinId skin_;
 
         friend class Model;
     };
@@ -148,12 +210,14 @@ public:
         auto rotation() const -> const glm::fquat & { return rotation_; }
         auto children() const -> const std::vector<NodeId> & { return children_; }
         auto meshes() const -> const std::vector<MeshId> & { return meshes_; }
+        auto animatedMeshes() const -> const std::vector<AnimatedMeshId> & { return animated_meshes_; }
 
         auto setTranslation(const glm::fvec3 &translation) -> void { translation_ = translation; }
         auto setScale(const glm::fvec3 &scale) -> void { scale_ = scale; }
         auto setRotation(const glm::fquat &rotation) -> void { rotation_ = rotation; }
 
         auto addMesh(MeshId id) -> void;
+        auto addAnimMesh(AnimatedMeshId id) -> void;
 
     private:
         Node(
@@ -170,6 +234,7 @@ public:
         glm::fvec3 scale_;
         glm::fquat rotation_;
         std::vector<MeshId> meshes_;
+        std::vector<AnimatedMeshId> animated_meshes_;
         std::vector<NodeId> children_;
 
         friend class Model;
@@ -208,6 +273,135 @@ public:
         friend class Model;
     };
 
+    class Animation final {
+    public:
+        enum class InterpolationMode {
+            eStep,
+            eLinear,
+            eCubic,
+        };
+
+        enum class TargetProperty {
+            eRotation,
+            eTranslation,
+            eScale,
+        };
+
+        template <TargetProperty Prop> struct PropertyDataType;
+
+        template <> struct PropertyDataType<TargetProperty::eRotation> {
+            using Type = glm::fquat;
+        };
+
+        template <> struct PropertyDataType<TargetProperty::eTranslation> {
+            using Type = glm::fvec3;
+        };
+
+        template <> struct PropertyDataType<TargetProperty::eScale> {
+            using Type = glm::fvec3;
+        };
+
+        template <AnimationPropertyType T> struct Keyframe final {
+            T value;
+            float time;
+        };
+
+        template <TargetProperty Prop> class Channel final {
+        public:
+            using PropertyType = typename PropertyDataType<Prop>::Type;
+            using KeyframeType = Keyframe<PropertyType>;
+
+            explicit Channel(NodeId node) : node_{node}, interpolation_{InterpolationMode::eLinear} {}
+
+            ~Channel() noexcept = default;
+
+            Channel(const Channel &) = delete;
+            auto operator=(const Channel &) = delete;
+
+            Channel(Channel &&) noexcept = default;
+            auto operator=(Channel &&) noexcept -> Channel & = default;
+
+            auto keyframes() const -> const std::vector<KeyframeType> & { return keyframes_; }
+            auto interpolation() const -> InterpolationMode { return interpolation_; }
+            auto node() const -> NodeId { return node_; }
+
+            auto keyframes() -> std::vector<KeyframeType> & { return keyframes_; }
+            auto setInterpolation(InterpolationMode mode) { interpolation_ = mode; }
+
+            auto sort() -> void {
+                std::sort(
+                    keyframes_.begin(), keyframes_.end(), [](const auto &a, const auto &b) { return a.time < b.time; });
+            }
+
+        private:
+            std::vector<KeyframeType> keyframes_;
+
+            NodeId node_;
+            InterpolationMode interpolation_;
+        };
+
+        using TranslationChannel = Channel<TargetProperty::eTranslation>;
+        using RotationChannel = Channel<TargetProperty::eRotation>;
+        using ScaleChannel = Channel<TargetProperty::eScale>;
+
+        using AnyChannel = std::variant<RotationChannel, TranslationChannel, ScaleChannel>;
+
+        explicit Animation(std::string_view name) : duration_{0.0f}, name_{name} {}
+
+        Animation(const Animation &) = delete;
+        auto operator=(const Animation &) = delete;
+
+        Animation(Animation &&) noexcept = default;
+        auto operator=(Animation &&) noexcept -> Animation & = default;
+
+        auto duration() const -> float { return duration_; }
+        auto name() const -> const std::string & { return name_; }
+
+        auto numTranslationChannels() const -> uint32_t { return translation_channels_.size(); }
+        auto numRotationChannels() const -> uint32_t { return rotation_channels_.size(); }
+        auto numScaleChannels() const -> uint32_t { return scale_channels_.size(); }
+
+        template <TargetProperty Prop> auto appendChannel(Channel<Prop> &&channel) -> void {
+            const auto last_keyframe_time = !channel.keyframes().empty() ? channel.keyframes().back().time : 0.0f;
+            duration_ = std::max(duration_, last_keyframe_time);
+
+            if constexpr (Prop == TargetProperty::eTranslation) {
+                translation_channels_.emplace_back(std::move(channel));
+            } else if constexpr (Prop == TargetProperty::eRotation) {
+                rotation_channels_.emplace_back(std::move(channel));
+            } else if constexpr (Prop == TargetProperty::eScale) {
+                scale_channels_.emplace_back(std::move(channel));
+            } else {
+                static_assert(false, "unsupported channel type");
+            }
+        }
+
+        template <TargetProperty Prop, std::invocable<uint32_t, const Channel<Prop> &> F>
+        auto iterateChannels(F consumer) const -> void {
+            auto &channels = [this]() -> const auto & {
+                if constexpr (Prop == TargetProperty::eTranslation) {
+                    return translation_channels_;
+                } else if constexpr (Prop == TargetProperty::eRotation) {
+                    return rotation_channels_;
+                } else if constexpr (Prop == TargetProperty::eScale) {
+                    return scale_channels_;
+                }
+            }();
+
+            for (uint32_t channel_id = 0; channel_id < channels.size(); ++channel_id) {
+                consumer(channel_id, channels[channel_id]);
+            }
+        }
+
+    private:
+        std::vector<TranslationChannel> translation_channels_;
+        std::vector<RotationChannel> rotation_channels_;
+        std::vector<ScaleChannel> scale_channels_;
+
+        float duration_;
+        std::string name_;
+    };
+
     class Pose final {
     public:
         class Node final {
@@ -227,6 +421,10 @@ public:
             auto setTranslation(const glm::fvec3 &translation) -> void;
             auto setScale(const glm::fvec3 &scale) -> void;
             auto setRotation(const glm::fquat &rotation) -> void;
+
+            auto setTranslationSilent(const glm::fvec3 &translation) -> void;
+            auto setScaleSilent(const glm::fvec3 &scale) -> void;
+            auto setRotationSilent(const glm::fquat &rotation) -> void;
 
             auto translation() const -> const glm::fvec3 & { return translation_; }
             auto scale() const -> const glm::fvec3 & { return scale_; }
@@ -252,6 +450,8 @@ public:
             friend class Model;
             friend class Pose;
         };
+
+        ~Pose() noexcept;
 
         Pose(const Pose &) = delete;
         auto operator=(const Pose &) = delete;
@@ -288,12 +488,18 @@ public:
 
     private:
         static auto fromModel(const Model &model) -> std::unique_ptr<Pose>;
+
         Pose() = default;
 
         auto recomputeTransformSubtree(NodeId root) -> void;
 
+        Renderer *renderer_ = nullptr;
+
         std::vector<Node> nodes_;
+        std::vector<Renderer::ActorMeshId> actor_meshes_;
+
         friend class Model;
+        friend class Controller;
     };
 
     Model(Renderer *renderer);
@@ -322,6 +528,18 @@ public:
         return addMeshImpl({vtx_ptr, vtx_len}, {idx_ptr, idx_len}, material);
     }
 
+    template <util::TypedContiguousRange<Renderer::SkinnedVertex> VR, util::TypedContiguousRange<const uint32_t> IR>
+    auto addAnimatedMesh(const VR &vertices, const IR &indices, MaterialId material, SkinId skin)
+        -> std::optional<AnimatedMeshId> {
+        const auto vtx_ptr = std::ranges::data(vertices);
+        const auto idx_ptr = std::ranges::data(indices);
+
+        const auto vtx_len = std::ranges::size(vertices);
+        const auto idx_len = std::ranges::size(indices);
+
+        return addAnimMeshImpl({vtx_ptr, vtx_len}, {idx_ptr, idx_len}, material, skin);
+    }
+
     template <util::TypedContiguousRange<const uint8_t> R>
     auto addRgbaTexture(uint32_t width, uint32_t height, const R &range) -> std::optional<TextureId> {
         const auto data_ptr = std::ranges::data(range);
@@ -330,18 +548,25 @@ public:
         return addRgbaTextureImpl(width, height, {data_ptr, data_len});
     }
 
+    auto addSkin(Skin &&skin) -> std::optional<SkinId>;
+
     auto addMaterial(const Material::Description &desc) -> std::optional<MaterialId>;
     auto addNode(NodeId parent, std::string_view name) -> std::optional<NodeId>;
+    auto addAnimation(Animation &&animation) -> std::optional<AnimationId>;
 
     auto getMesh(MeshId handle) -> Mesh *;
+    auto getAnimMesh(AnimatedMeshId handle) -> AnimatedMesh *;
     auto getNode(NodeId handle) -> Node *;
     auto getTexture(TextureId handle) -> Texture *;
     auto getMaterial(MaterialId handle) -> Material *;
+    auto getAnimation(AnimationId handle) -> Animation *;
 
     auto getMesh(MeshId handle) const -> const Mesh *;
+    auto getAnimMesh(AnimatedMeshId handle) const -> const AnimatedMesh *;
     auto getNode(NodeId handle) const -> const Node *;
     auto getTexture(TextureId handle) const -> const Texture *;
     auto getMaterial(MaterialId handle) const -> const Material *;
+    auto getAnimation(AnimationId handle) const -> const Animation *;
 
     template <std::invocable<const Mesh &> F> auto withMesh(MeshId handle, F consumer) const -> void {
         const auto mesh = getMesh(handle);
@@ -352,6 +577,21 @@ public:
 
     template <std::invocable<Mesh &> F> auto withMeshMut(MeshId handle, F consumer) -> void {
         auto mesh = getMesh(handle);
+        if (mesh) {
+            consumer(*mesh);
+        }
+    }
+
+    template <std::invocable<const AnimatedMesh &> F>
+    auto withAnimMesh(AnimatedMeshId handle, F consumer) const -> void {
+        auto mesh = getAnimMesh(handle);
+        if (mesh) {
+            consumer(*mesh);
+        }
+    }
+
+    template <std::invocable<AnimatedMesh &> F> auto withAnimMeshMut(AnimatedMeshId handle, F consumer) -> void {
+        auto mesh = getAnimMesh(handle);
         if (mesh) {
             consumer(*mesh);
         }
@@ -399,9 +639,38 @@ public:
         }
     }
 
+    template <std::invocable<const Animation &> F> auto withAnimation(AnimationId handle, F consumer) const -> void {
+        const auto animation = getAnimation(handle);
+        if (animation) {
+            consumer(*animation);
+        }
+    }
+
+    std::vector<AnimationId> makeAnimationList() const {
+        std::vector<AnimationId> animations;
+        for (uint32_t anim_id = 0; anim_id < animations_.size(); ++anim_id) {
+            animations.push_back(AnimationId{anim_id});
+        }
+
+        return animations;
+    }
+
+    template <std::invocable<Animation &> F> auto withAnimationMut(AnimationId handle, F consumer) -> void {
+        auto animation = getAnimation(handle);
+        if (animation) {
+            consumer(*animation);
+        }
+    }
+
+    template <std::invocable<NodeId, const Node &> F> auto iterateNodes(F consumer) const -> void {
+        for (uint32_t id = 0; id < nodes_.size(); ++id) {
+            consumer(NodeId{id}, nodes_[id]);
+        }
+    }
+
     template <std::invocable<NodeId, const Node &> F> auto iterateMeshNodes(F consumer) const -> void {
         for (const auto &id : mesh_nodes_) {
-            consumer(nodes_[id.index()]);
+            consumer(id, nodes_[id.index()]);
         }
     }
 
@@ -409,10 +678,135 @@ public:
 
     static auto fromAct(Renderer *renderer, const act::Model &act_model) -> std::unique_ptr<Model>;
 
+    class Controller final {
+    private:
+        struct ChannelData {
+            uint32_t prev_keyframe;
+            uint32_t next_keyframe;
+
+            float prev_keyframe_time;
+            float next_keyframe_time;
+        };
+
+        Controller(const Model *model, AnimationId animation)
+            : model_{model}, animation_{animation}, time_{0.0f}, loop_{true} {
+            pose_ = model->createPose();
+            initializeAnimationData();
+        }
+
+        using TranslationChannel = Animation::TranslationChannel;
+        using RotationChhannel = Animation::RotationChannel;
+        using ScaleChannel = Animation::ScaleChannel;
+
+    public:
+        Controller(const Controller &) = delete;
+        auto operator=(const Controller &) -> Controller & = delete;
+
+        Controller(Controller &&) noexcept = default;
+        auto operator=(Controller &&) noexcept -> Controller & = default;
+
+        ~Controller() = default;
+
+        auto animation() const -> AnimationId { return animation_; }
+        auto loop() const -> bool { return loop_; }
+        auto time() const -> float { return time_; }
+        auto pose() const -> const Pose & { return *pose_.get(); }
+
+        auto setLoop(bool loop) -> void { loop_ = loop; }
+
+        auto setAnimation(AnimationId id) -> void;
+        auto integrate(float delta_time) -> void;
+        auto seek(float time) -> void;
+
+    private:
+        template <Animation::TargetProperty Prop>
+        auto resetChannelData(
+            std::vector<ChannelData> &channel_data, uint32_t channel_id, const Animation::Channel<Prop> &channel)
+            -> void {
+            const auto &keyframes = channel.keyframes();
+
+            if (keyframes.size() == 0) { // invalid channel dont initialize?
+                return;
+            }
+
+            if (keyframes.size() == 1) { // one keyframe, simply add it
+                channel_data[channel_id].prev_keyframe = 0;
+                channel_data[channel_id].next_keyframe = 0;
+                channel_data[channel_id].prev_keyframe_time = 0.0f;
+                channel_data[channel_id].next_keyframe_time = 99999.0f;
+                return;
+            }
+
+            // otherwise pick the first keyframe and the second keyframe
+            channel_data[channel_id].prev_keyframe = 0;
+            channel_data[channel_id].next_keyframe = 1;
+            channel_data[channel_id].prev_keyframe_time = keyframes[0].time;
+            channel_data[channel_id].next_keyframe_time = keyframes[1].time;
+        }
+
+        auto resetAnimationData(const Animation &animation) -> void;
+        auto initializeAnimationData() -> void;
+
+        template <
+            Animation::TargetProperty Prop,
+            std::invocable<
+                const typename Animation::Channel<Prop>::KeyframeType &,
+                const typename Animation::Channel<Prop>::KeyframeType &, float, Pose::Node &>
+                F>
+        auto updateAnimationChannel(
+            std::vector<ChannelData> &channel_data_list, uint32_t channel_id, const Animation::Channel<Prop> &channel,
+            F interpolate) -> void {
+            const auto &keyframes = channel.keyframes();
+            auto &channel_data = channel_data_list[channel_id];
+
+            if (time_ > channel_data.next_keyframe_time) {
+                const auto num_keyframes = keyframes.size();
+                do {
+                    channel_data.prev_keyframe++;
+                    channel_data.next_keyframe++;
+
+                    channel_data.prev_keyframe_time = keyframes[channel_data.prev_keyframe].time;
+                    channel_data.next_keyframe_time = keyframes[channel_data.next_keyframe].time;
+                } while ((channel_data.next_keyframe < num_keyframes - 1) &&
+                         (keyframes[channel_data.next_keyframe].time < time_));
+            }
+
+            const auto &prev_keyframe = keyframes[channel_data.prev_keyframe];
+            const auto &next_keyframe = keyframes[channel_data.next_keyframe];
+
+            pose_->withNodeMut(
+                channel.node(), [&](auto &node) { interpolate(prev_keyframe, next_keyframe, time_, node); });
+        }
+
+        auto updateAnimationChannel(uint32_t channel_id, const TranslationChannel &channel) -> void;
+        auto updateAnimationChannel(uint32_t channel_id, const RotationChhannel &channel) -> void;
+        auto updateAnimationChannel(uint32_t channel_id, const ScaleChannel &channel) -> void;
+        auto updateAnimation(const Animation &animation) -> void;
+
+        const Model *model_;
+
+        AnimationId animation_;
+        std::unique_ptr<Pose> pose_;
+
+        float time_;
+        bool loop_;
+
+        std::vector<ChannelData> translation_data_;
+        std::vector<ChannelData> rotation_data_;
+        std::vector<ChannelData> scale_data_;
+
+        friend class Model;
+    };
+
+    auto createController(AnimationId animation) -> Controller;
+
 private:
     auto addMeshImpl(
         std::span<const Renderer::StaticVertex> vertices, std::span<const uint32_t> indices, MaterialId material)
         -> std::optional<MeshId>;
+    auto addAnimMeshImpl(
+        std::span<const Renderer::SkinnedVertex> vertices, std::span<const uint32_t> indices, MaterialId material,
+        SkinId skin) -> std::optional<AnimatedMeshId>;
     auto addRgbaTextureImpl(uint32_t width, uint32_t height, std::span<const uint8_t> data) -> std::optional<TextureId>;
 
     Renderer *renderer_;
@@ -421,7 +815,10 @@ private:
     std::vector<Node> nodes_;
     std::vector<Texture> textures_;
     std::vector<Material> materials_;
+    std::vector<Skin> skins_;
+    std::vector<AnimatedMesh> animated_meshes_;
     std::vector<NodeId> mesh_nodes_;
+    std::vector<Animation> animations_;
 
     friend class Node;
 };

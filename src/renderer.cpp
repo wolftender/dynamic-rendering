@@ -8,44 +8,6 @@
 
 namespace graphics {
 
-template <typename T, size_t kCapacity> class FixedSizeQueue final {
-public:
-    FixedSizeQueue() = default;
-    ~FixedSizeQueue() = default;
-
-    auto capacity() const -> size_t { return kCapacity; }
-    auto fill() const -> size_t { return fill_; }
-    auto empty() const -> bool { return 0ull == fill_; }
-    auto full() const -> bool { return kCapacity == fill_; }
-
-    auto push(T v) -> void {
-        if (full()) {
-            return;
-        }
-
-        const auto index = (begin_ + fill_) % kCapacity;
-        storage_[index] = std::move(v);
-
-        fill_++;
-    }
-
-    auto pop() -> std::optional<T> {
-        if (empty()) {
-            return std::nullopt;
-        }
-
-        auto value = std::move(storage_[begin_]);
-        begin_ = (begin_ + 1) % kCapacity;
-        fill_--;
-
-        return value;
-    }
-
-private:
-    size_t begin_ = 0ull, fill_ = 0ull;
-    std::array<T, kCapacity> storage_;
-};
-
 template <uint32_t kNumSets> class Renderer::DescriptorSetHelper final {
 public:
     enum class DescriptorDataType {
@@ -247,8 +209,10 @@ private:
     std::array<VkDescriptorSet, kNumFramesInFlight> sets_;
 };
 
-template <typename T, uint32_t kPoolSize> class Renderer::ResourcePool {
+template <typename T, typename Tag, uint32_t kPoolSize> class Renderer::ResourcePool {
 public:
+    using Id = ResourceId<T, Tag>;
+
     ResourcePool() {
         for (uint32_t i = 0; i < kPoolSize; ++i) {
             storage_[i].resource = std::nullopt;
@@ -267,14 +231,14 @@ public:
     ResourcePool(ResourcePool &&) noexcept = delete;
     auto operator=(ResourcePool &&) noexcept = delete;
 
-    auto storeResource(T resource, uint32_t frame) -> std::optional<ResourceId<T>> {
+    auto storeResource(T resource, uint32_t frame) -> std::optional<Id> {
         auto index = free_ids_.pop();
         if (!index.has_value()) {
             return std::nullopt;
         }
 
         auto &slot = storage_[index.value()];
-        auto id = ResourceId<T>{index.value(), slot.generation};
+        auto id = Id{index.value(), slot.generation};
 
         slot.resource = std::move(resource);
         slot.valid = true;
@@ -283,7 +247,7 @@ public:
         return id;
     }
 
-    auto getResource(const ResourceId<T> &id) const -> const T * {
+    auto getResource(const Id &id) -> T * {
         auto &slot = storage_[id.index()];
         if (id.generation() != slot.generation) {
             return nullptr;
@@ -296,7 +260,20 @@ public:
         return &slot.resource.value();
     }
 
-    auto refResource(const ResourceId<T> id, uint32_t frame) -> const T * {
+    auto getResource(const Id &id) const -> const T * {
+        auto &slot = storage_[id.index()];
+        if (id.generation() != slot.generation) {
+            return nullptr;
+        }
+
+        if (!slot.valid || !slot.resource.has_value()) {
+            return nullptr;
+        }
+
+        return &slot.resource.value();
+    }
+
+    auto refResource(const Id id, uint32_t frame) -> const T * {
         auto &slot = storage_[id.index()];
         if (id.generation() != slot.generation) {
             return nullptr;
@@ -310,7 +287,7 @@ public:
         return &slot.resource.value();
     }
 
-    auto destroyResource(const ResourceId<T> &id) -> void {
+    auto destroyResource(const Id &id) -> void {
         auto &slot = storage_[id.index()];
         if (id.generation() != slot.generation) {
             return;
@@ -350,14 +327,15 @@ private:
     };
 
     std::array<Slot, kPoolSize> storage_;
-    FixedSizeQueue<uint32_t, kPoolSize> free_ids_;
-    std::array<FixedSizeQueue<uint32_t, kPoolSize>, kNumFramesInFlight> deletion_queues_;
+    util::FixedSizeQueue<uint32_t, kPoolSize> free_ids_;
+    std::array<util::FixedSizeQueue<uint32_t, kPoolSize>, kNumFramesInFlight> deletion_queues_;
 };
 
 class Renderer::BindlessTexturePool final {
 public:
     constexpr static size_t kNumTextureSets = kNumFramesInFlight;
     using TextureDescriptorHelper = DescriptorSetHelper<kNumTextureSets>;
+    using TexturePool = ResourcePool<Texture, TextureTag, kNumTexturePoolSize>;
 
     static auto create(Renderer *renderer) -> std::unique_ptr<BindlessTexturePool> {
         std::unique_ptr<BindlessTexturePool> pool{new (std::nothrow) BindlessTexturePool()};
@@ -446,7 +424,7 @@ public:
     auto descriptorSet(uint32_t frame) const -> VkDescriptorSet { return descriptor_helper_->getSetForFrame(frame); }
     auto descriptorSetLayout() const -> VkDescriptorSetLayout { return descriptor_helper_->layout(); }
 
-    auto storeResource(Texture resource, uint32_t frame) -> std::optional<ResourceId<Texture>> {
+    auto storeResource(Texture resource, uint32_t frame) -> std::optional<TexturePool::Id> {
         // get the handles before moving
         const auto vk_view = resource.imageView().view();
         const auto vk_sampler = resource.sampler();
@@ -465,13 +443,13 @@ public:
         return id;
     }
 
-    auto getResource(const ResourceId<Texture> &id) const -> const Texture * { return pool_.getResource(id); }
+    auto getResource(const TexturePool::Id &id) const -> const Texture * { return pool_.getResource(id); }
 
-    auto refResource(const ResourceId<Texture> id, uint32_t frame) -> const Texture * {
+    auto refResource(const TexturePool::Id id, uint32_t frame) -> const Texture * {
         return pool_.refResource(id, frame);
     }
 
-    auto destroyResource(const ResourceId<Texture> &id) -> void { return pool_.destroyResource(id); }
+    auto destroyResource(const TexturePool::Id &id) -> void { return pool_.destroyResource(id); }
 
     auto garbageCollect(uint32_t last_frame) -> void {
         pool_.garbageCollect(last_frame, [&](uint32_t index, [[maybe_unused]] Texture &&t) {
@@ -526,123 +504,112 @@ private:
     VkSampler null_sampler_ = VK_NULL_HANDLE;
 
     std::unique_ptr<TextureDescriptorHelper> descriptor_helper_;
-    ResourcePool<Texture, kNumTexturePoolSize> pool_;
+    ResourcePool<Texture, TextureTag, kNumTexturePoolSize> pool_;
     std::array<VkDescriptorImageInfo, kNumTexturePoolSize> descriptors_;
 };
 
-template <typename cbBufferDataType> class Renderer::SceneBufferHelper final {
-public:
-    static constexpr auto kDataSize = sizeof(cbBufferDataType);
+Renderer::BufferHelper::BufferHelper(Renderer *renderer, size_t size)
+    : renderer_{renderer}, context_{renderer_->context_}, size_{size} {
+    device_buffer_ = context_->memory().createDeviceBuffer(
+        VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, size_);
+    staging_buffer_ = context_->memory().createSharedBuffer(VK_BUFFER_USAGE_TRANSFER_SRC_BIT, size_);
 
-    static auto create(Renderer *renderer) -> std::unique_ptr<SceneBufferHelper<cbBufferDataType>> {
-        std::unique_ptr<SceneBufferHelper<cbBufferDataType>> buffer_helper{new (std::nothrow)
-                                                                               SceneBufferHelper<cbBufferDataType>()};
+    VkBufferDeviceAddressInfo addr_info = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
+        .buffer = device_buffer_.buffer(),
+    };
 
-        if (!buffer_helper) {
-            LogError("vulkan: failed to allocate buffer helper");
-            return nullptr;
-        }
+    device_address_ = vkGetBufferDeviceAddress(context_->device(), &addr_info);
+    ::memset(staging_buffer_.cpuMappedPointer(), 0, size_);
+}
 
-        buffer_helper->renderer_ = renderer;
-        buffer_helper->context_ = buffer_helper->renderer_->context_;
+Renderer::BufferHelper::~BufferHelper() noexcept { device_address_ = 0ull; }
 
-        buffer_helper->device_buffer_ = buffer_helper->context_->memory().createDeviceBuffer(
-            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, kDataSize);
-        buffer_helper->staging_buffer_ =
-            buffer_helper->context_->memory().createSharedBuffer(VK_BUFFER_USAGE_TRANSFER_SRC_BIT, kDataSize);
+Renderer::BufferHelper::BufferHelper(BufferHelper &&b) noexcept {
+    renderer_ = b.renderer_;
+    context_ = b.context_;
 
-        VkBufferDeviceAddressInfo addr_info = {
-            .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
-            .buffer = buffer_helper->device_buffer_.buffer(),
-        };
+    size_ = b.size_;
 
-        buffer_helper->device_address_ = vkGetBufferDeviceAddress(buffer_helper->context_->device(), &addr_info);
-        ::memset(buffer_helper->staging_buffer_.cpuMappedPointer(), 0, kDataSize);
+    staging_buffer_ = std::move(b.staging_buffer_);
+    device_buffer_ = std::move(b.device_buffer_);
+    device_address_ = std::move(b.device_address_);
 
-        return buffer_helper;
+    b.device_address_ = 0ull;
+    b.size_ = 0ull;
+}
+
+auto Renderer::BufferHelper::operator=(BufferHelper &&b) noexcept -> BufferHelper & {
+    if (this != &b) {
+        renderer_ = b.renderer_;
+        context_ = b.context_;
+
+        size_ = b.size_;
+
+        staging_buffer_ = std::move(b.staging_buffer_);
+        device_buffer_ = std::move(b.device_buffer_);
+        device_address_ = std::move(b.device_address_);
+
+        b.device_address_ = 0ull;
+        b.size_ = 0ull;
     }
 
-    ~SceneBufferHelper() = default;
+    return *this;
+}
 
-    SceneBufferHelper(const SceneBufferHelper &) = delete;
-    auto operator=(const SceneBufferHelper &) = delete;
+auto Renderer::BufferHelper::upload(VkCommandBuffer command_buffer, std::span<const uint8_t> data) -> void {
+    // copy to staging buffer
+    ::memcpy(staging_buffer_.cpuMappedPointer(), data.data(), std::min(data.size_bytes(), size_));
 
-    SceneBufferHelper(SceneBufferHelper &&) noexcept = delete;
-    auto operator=(SceneBufferHelper &&) noexcept = delete;
+    // gpu buffer don't care -> transfer dst
+    VkBufferMemoryBarrier2 barrier_unknown_to_transfer_dst = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_NONE,
+        .srcAccessMask = 0,
+        .dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+        .dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+        .buffer = device_buffer_.buffer(),
+        .offset = 0,
+        .size = VK_WHOLE_SIZE,
+    };
 
-    auto stagingBuffer() const -> const Buffer & { return staging_buffer_; }
-    auto deviceBuffer() const -> const Buffer & { return device_buffer_; }
-    auto deviceAddress() const -> VkDeviceAddress { return device_address_; }
+    VkDependencyInfo dep_unknown_to_transfer_dst = {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .bufferMemoryBarrierCount = 1,
+        .pBufferMemoryBarriers = &barrier_unknown_to_transfer_dst,
+    };
 
-    auto storage() -> cbBufferDataType & { return data_; }
-    auto storage() const -> const cbBufferDataType & { return data_; }
+    vkCmdPipelineBarrier2(command_buffer, &dep_unknown_to_transfer_dst);
 
-    auto upload(VkCommandBuffer command_buffer) -> void {
-        // copy to staging buffer
-        ::memcpy(staging_buffer_.cpuMappedPointer(), reinterpret_cast<const void *>(&data_), kDataSize);
+    // copy
+    VkBufferCopy buffer_copy = {
+        .srcOffset = 0,
+        .dstOffset = 0,
+        .size = size_,
+    };
 
-        // gpu buffer don't care -> transfer dst
-        VkBufferMemoryBarrier2 barrier_unknown_to_transfer_dst = {
-            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-            .srcStageMask = VK_PIPELINE_STAGE_2_NONE,
-            .srcAccessMask = 0,
-            .dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-            .dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-            .buffer = device_buffer_.buffer(),
-            .offset = 0,
-            .size = VK_WHOLE_SIZE,
-        };
+    vkCmdCopyBuffer(command_buffer, staging_buffer_.buffer(), device_buffer_.buffer(), 1, &buffer_copy);
 
-        VkDependencyInfo dep_unknown_to_transfer_dst = {
-            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-            .bufferMemoryBarrierCount = 1,
-            .pBufferMemoryBarriers = &barrier_unknown_to_transfer_dst,
-        };
+    // gpu buffer transfer dst -> shader read
+    VkBufferMemoryBarrier2 barrier_transfer_dst_to_shader_read = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+        .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+        .dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT,
+        .buffer = device_buffer_.buffer(),
+        .offset = 0,
+        .size = VK_WHOLE_SIZE,
+    };
 
-        vkCmdPipelineBarrier2(command_buffer, &dep_unknown_to_transfer_dst);
+    VkDependencyInfo dep_transfer_dst_to_shader_read = {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .bufferMemoryBarrierCount = 1,
+        .pBufferMemoryBarriers = &barrier_transfer_dst_to_shader_read,
+    };
 
-        // copy
-        VkBufferCopy buffer_copy = {
-            .srcOffset = 0,
-            .dstOffset = 0,
-            .size = kDataSize,
-        };
-
-        vkCmdCopyBuffer(command_buffer, staging_buffer_.buffer(), device_buffer_.buffer(), 1, &buffer_copy);
-
-        // gpu buffer transfer dst -> shader read
-        VkBufferMemoryBarrier2 barrier_transfer_dst_to_shader_read = {
-            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-            .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-            .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-            .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-            .dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT,
-            .buffer = device_buffer_.buffer(),
-            .offset = 0,
-            .size = VK_WHOLE_SIZE,
-        };
-
-        VkDependencyInfo dep_transfer_dst_to_shader_read = {
-            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-            .bufferMemoryBarrierCount = 1,
-            .pBufferMemoryBarriers = &barrier_transfer_dst_to_shader_read,
-        };
-
-        vkCmdPipelineBarrier2(command_buffer, &dep_transfer_dst_to_shader_read);
-    }
-
-private:
-    SceneBufferHelper() = default;
-
-    cbBufferDataType data_;
-
-    Buffer staging_buffer_ = {};
-    Buffer device_buffer_ = {};
-    VkDeviceAddress device_address_ = {};
-
-    Context *context_ = nullptr;
-    Renderer *renderer_ = nullptr;
-};
+    vkCmdPipelineBarrier2(command_buffer, &dep_transfer_dst_to_shader_read);
+}
 
 Renderer::Mesh::Mesh(Mesh &&m) noexcept {
     renderer_ = std::move(m.renderer_);
@@ -680,24 +647,26 @@ auto Renderer::Mesh::operator=(Mesh &&m) noexcept -> Mesh & {
     return *this;
 }
 
-auto Renderer::Mesh::create(
-    Renderer *renderer, std::span<const uint8_t> vertex_buffer, uint32_t num_vertices,
-    std::span<const uint32_t> indices) -> std::optional<Mesh> {
+auto Renderer::Mesh::create(Renderer *renderer, const Description &desc) -> std::optional<Mesh> {
     Mesh mesh;
 
     mesh.renderer_ = renderer;
     const auto &memory = mesh.renderer_->context_->memory();
 
-    mesh.num_vertices_ = num_vertices;
-    mesh.num_indices_ = std::size(indices);
+    const size_t aligned_buffer_size = util::bytes::align_ptr(desc.num_vertices, kVertexBufferAlign) * desc.vertex_size;
+    assert(aligned_buffer_size > desc.vertex_buffer.size_bytes());
 
-    mesh.vertex_buffer_size_ = vertex_buffer.size();
-    mesh.index_buffer_size_ = indices.size() * sizeof(uint32_t);
+    mesh.num_vertices_ = desc.num_vertices;
+    mesh.num_indices_ = std::size(desc.indices);
 
-    mesh.vertex_buffer_ = memory.createBuffer(VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, vertex_buffer);
+    mesh.vertex_buffer_size_ = aligned_buffer_size;
+    mesh.index_buffer_size_ = desc.indices.size() * sizeof(uint32_t);
+
+    mesh.vertex_buffer_ = memory.createBuffer(
+        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | desc.vertex_buffer_flags, desc.vertex_buffer, aligned_buffer_size);
     mesh.index_bufer_ = memory.createBuffer(
-        VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
-        std::span<const uint8_t>{reinterpret_cast<const uint8_t *>(indices.data()), mesh.index_buffer_size_});
+        VK_BUFFER_USAGE_INDEX_BUFFER_BIT | desc.index_buffer_flags,
+        std::span<const uint8_t>{reinterpret_cast<const uint8_t *>(desc.indices.data()), mesh.index_buffer_size_});
 
     return std::move(mesh);
 }
@@ -786,6 +755,31 @@ Renderer::Texture::~Texture() noexcept {
     }
 }
 
+auto Renderer::ActorMesh::create(Renderer *renderer, AnimatedMeshId mesh) -> std::optional<ActorMesh> {
+    const auto *base_mesh = renderer->getAnimMesh(mesh);
+    if (!base_mesh) {
+        return std::nullopt;
+    }
+
+    auto bone_buffer = SharedDataBuffer<cbSkinningBuffer>::create(renderer);
+    if (!bone_buffer.has_value()) {
+        return std::nullopt;
+    }
+
+    ActorMesh actor{renderer, mesh, std::move(bone_buffer.value())};
+    actor.num_vertices_ = util::bytes::align_ptr(base_mesh->numVertices(), kVertexBufferAlign);
+    actor.output_buffer_size_ = actor.num_vertices_ * sizeof(StaticVertex);
+
+    for (uint32_t i = 0; i < kNumFramesInFlight; ++i) {
+        actor.output_buffer_[i] = actor.renderer_->context_->memory().createDeviceBuffer(
+            VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+            actor.output_buffer_size_);
+    }
+
+    return actor;
+}
+
 auto Renderer::create(const Description &description) -> std::unique_ptr<Renderer> {
     std::unique_ptr<Renderer> renderer{new (std::nothrow) Renderer()};
     if (!renderer) {
@@ -794,12 +788,14 @@ auto Renderer::create(const Description &description) -> std::unique_ptr<Rendere
     }
 
     renderer->context_ = description.context;
-    renderer->mesh_pool_ = std::make_unique<ResourcePool<Mesh, kNumMeshPoolSize>>();
     renderer->texture_pool_ = BindlessTexturePool::create(renderer.get());
+    renderer->mesh_pool_ = std::make_unique<ResourcePool<Mesh, MeshTag, kNumMeshPoolSize>>();
+    renderer->anim_mesh_pool_ = std::make_unique<ResourcePool<Mesh, AnimatedMeshTag, kNumAnimMeshPoolSize>>();
+    renderer->actor_mesh_pool_ = std::make_unique<ResourcePool<ActorMesh, ActorMeshTag, kNumMaxSkinnedObjects>>();
     renderer->createSwapchainData();
 
     for (size_t i = 0; i < kNumFramesInFlight; ++i) {
-        renderer->frames_[i].scene_buffer = SceneBufferHelper<cbFrameHeapBuffer>::create(renderer.get());
+        renderer->frames_[i].scene_buffer = TypedBufferHelper<cbFrameHeapBuffer>::create(renderer.get());
     }
 
     // allocate command buffers
@@ -844,6 +840,12 @@ auto Renderer::create(const Description &description) -> std::unique_ptr<Rendere
             vkCreateSemaphore(renderer->context_->device(), &semaphore_desc, nullptr, &frame.present_semaphore));
     }
 
+    renderer->skinning_pass_ = ComputeSkinningPass::create(renderer.get(), description.shader_loader.get());
+    if (!renderer->skinning_pass_) {
+        LogError("vulkan: renderer cannot initialize compute skinning pipeline");
+        return nullptr;
+    }
+
     renderer->geometry_pass_ = OpaqueGeometryPass::create(renderer.get(), description.shader_loader.get());
     if (!renderer->geometry_pass_) {
         LogError("vulkan: renderer cannot initialize graphics pipeline");
@@ -861,10 +863,28 @@ auto Renderer::addTexture(Texture &&texture) -> std::optional<TextureId> {
     return texture_pool_->storeResource(std::move(texture), current_frame_);
 }
 
+auto Renderer::addAnimMesh(Mesh &&mesh) -> std::optional<AnimatedMeshId> {
+    return anim_mesh_pool_->storeResource(std::move(mesh), current_frame_);
+}
+
+auto Renderer::addActorMesh(ActorMesh &&mesh) -> std::optional<ActorMeshId> {
+    return actor_mesh_pool_->storeResource(std::move(mesh), current_frame_);
+}
+
 auto Renderer::getMesh(const MeshId &id) const -> const Mesh * { return mesh_pool_->getResource(id); }
 auto Renderer::getTexture(const TextureId &id) const -> const Texture * { return texture_pool_->getResource(id); }
+auto Renderer::getAnimMesh(const AnimatedMeshId &id) const -> const Mesh * { return anim_mesh_pool_->getResource(id); }
+
+auto Renderer::getActorMesh(const ActorMeshId &id) const -> const ActorMesh * {
+    return actor_mesh_pool_->getResource(id);
+}
+
+auto Renderer::getActorMesh(const ActorMeshId &id) -> ActorMesh * { return actor_mesh_pool_->getResource(id); }
+
 auto Renderer::unrefMesh(const MeshId &id) -> void { mesh_pool_->destroyResource(id); }
 auto Renderer::unrefTexture(const TextureId &id) -> void { texture_pool_->destroyResource(id); }
+auto Renderer::unrefAnimMesh(const AnimatedMeshId &id) -> void { anim_mesh_pool_->destroyResource(id); }
+auto Renderer::unrefActorMesh(const ActorMeshId &id) -> void { actor_mesh_pool_->destroyResource(id); }
 
 auto Renderer::createSwapchainData() -> void {
     const auto surface_extent = context_->surfaceExtent();
@@ -904,6 +924,81 @@ auto Renderer::createSwapchainData() -> void {
     for (size_t i = 0; i < num_swapchain_images; ++i) {
         VK_CHECK_ERROR(
             vkCreateSemaphore(context_->device(), &semaphore_desc, nullptr, &swapchain_data_[i].render_semaphore));
+    }
+}
+
+auto Renderer::ComputeSkinningPass::create(Renderer *renderer, const IShaderLoader *shader_loader)
+    -> std::unique_ptr<ComputeSkinningPass> {
+    std::unique_ptr<ComputeSkinningPass> pass{new (std::nothrow) ComputeSkinningPass()};
+    if (!pass) {
+        LogError("vulkan: renderer cannot allocate compute skinning pass resources");
+        return nullptr;
+    }
+
+    pass->renderer_ = renderer;
+
+    const auto device = pass->renderer_->context_->device();
+
+    const auto shader_buffer = shader_loader->loadSkinningPassShader();
+    if (!shader_buffer) {
+        LogError("vulkan: renderer cannot load main shader");
+        return nullptr;
+    }
+
+    VkShaderModuleCreateInfo shader_module_info = {
+        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+        .codeSize = shader_buffer->size() * sizeof(uint32_t),
+        .pCode = shader_buffer->data(),
+    };
+
+    VK_CHECK_ERROR(vkCreateShaderModule(device, &shader_module_info, nullptr, &pass->shader_module_));
+
+    // graphics pipeline
+    VkPushConstantRange push_constant_range = {
+        .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+        .size = sizeof(cbPushConstantBuffer),
+    };
+
+    VkPipelineLayoutCreateInfo pipeline_layout_desc = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        .setLayoutCount = 0,
+        .pSetLayouts = nullptr,
+        .pushConstantRangeCount = 1,
+        .pPushConstantRanges = &push_constant_range,
+    };
+
+    VK_CHECK_ERROR(vkCreatePipelineLayout(device, &pipeline_layout_desc, nullptr, &pass->pipeline_layout_));
+
+    VkComputePipelineCreateInfo pipeline_info = {
+        .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+        .stage =
+            VkPipelineShaderStageCreateInfo{
+                .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+                .module = pass->shader_module_,
+                .pName = "main",
+            },
+        .layout = pass->pipeline_layout_,
+    };
+
+    VK_CHECK_ERROR(vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pass->pipeline_));
+    return pass;
+}
+
+Renderer::ComputeSkinningPass::~ComputeSkinningPass() noexcept {
+    if (VK_NULL_HANDLE != pipeline_) {
+        vkDestroyPipeline(renderer_->context_->device(), pipeline_, nullptr);
+        pipeline_ = VK_NULL_HANDLE;
+    }
+
+    if (VK_NULL_HANDLE != pipeline_layout_) {
+        vkDestroyPipelineLayout(renderer_->context_->device(), pipeline_layout_, nullptr);
+        pipeline_layout_ = VK_NULL_HANDLE;
+    }
+
+    if (VK_NULL_HANDLE != shader_module_) {
+        vkDestroyShaderModule(renderer_->context_->device(), shader_module_, nullptr);
+        shader_module_ = VK_NULL_HANDLE;
     }
 }
 
@@ -1144,6 +1239,15 @@ auto Renderer::frame() -> util::Result {
         }
     }
 
+    struct IndexedDrawCall {
+        VkBuffer vertex_buffer = VK_NULL_HANDLE;
+        VkBuffer index_buffer = VK_NULL_HANDLE;
+        uint32_t num_indices = 0;
+    };
+
+    std::array<IndexedDrawCall, kNumMaxStaticObjects> indexed_draws = {};
+    uint32_t num_indexed_draws = 0;
+
     // update frame data
     auto &scene_buffer = current_frame.scene_buffer;
     auto &scene_buffer_data = scene_buffer->storage();
@@ -1153,22 +1257,75 @@ auto Renderer::frame() -> util::Result {
     scene_buffer_data.view = camera_.view();
     scene_buffer_data.view_inv = camera_.viewInv();
 
-    for (uint32_t i = 0; i < draw_queue_fill_; ++i) {
-        scene_buffer_data.static_objects[i].world = draw_queue_[i]->world_matrix;
+    for (uint32_t i = 0; i < draw_queue_fill_ && num_indexed_draws < kNumMaxStaticObjects; ++i, ++num_indexed_draws) {
+        const auto object_id = num_indexed_draws;
+        scene_buffer_data.static_objects[object_id].world = draw_queue_[i]->world_matrix;
 
         if (draw_queue_[i]->diffuse_map.has_value()) {
-            scene_buffer_data.static_objects[i].diffuse_map =
-                static_cast<int32_t>(draw_queue_[i]->diffuse_map.value().index());
+            if (nullptr != texture_pool_->refResource(draw_queue_[i]->diffuse_map.value(), current_frame_)) {
+                scene_buffer_data.static_objects[object_id].diffuse_map =
+                    static_cast<int32_t>(draw_queue_[i]->diffuse_map.value().index());
+            }
         } else {
-            scene_buffer_data.static_objects[i].diffuse_map = -1;
+            scene_buffer_data.static_objects[object_id].diffuse_map = -1;
         }
 
         if (draw_queue_[i]->normal_map.has_value()) {
-            scene_buffer_data.static_objects[i].normal_map =
-                static_cast<int32_t>(draw_queue_[i]->normal_map.value().index());
+            if (nullptr != texture_pool_->refResource(draw_queue_[i]->normal_map.value(), current_frame_)) {
+                scene_buffer_data.static_objects[object_id].normal_map =
+                    static_cast<int32_t>(draw_queue_[i]->normal_map.value().index());
+            }
         } else {
-            scene_buffer_data.static_objects[i].normal_map = -1;
+            scene_buffer_data.static_objects[object_id].normal_map = -1;
         }
+
+        auto &draw_call = indexed_draws[object_id];
+        const auto *mesh_ref = mesh_pool_->refResource(draw_queue_[i]->mesh, current_frame_);
+
+        draw_call.vertex_buffer = mesh_ref->vertexBuffer().buffer();
+        draw_call.index_buffer = mesh_ref->indexBuffer().buffer();
+        draw_call.num_indices = mesh_ref->numIndices();
+    }
+
+    // upload all queued compute skinning bone buffers
+    for (uint32_t i = 0; i < skinning_queue_fill_ && num_indexed_draws < kNumMaxStaticObjects;
+         ++i, ++num_indexed_draws) {
+        const auto object_id = num_indexed_draws;
+        scene_buffer_data.static_objects[object_id].world = skinning_queue_[i]->world_matrix;
+
+        if (skinning_queue_[i]->diffuse_map.has_value()) {
+            if (nullptr != texture_pool_->refResource(skinning_queue_[i]->diffuse_map.value(), current_frame_)) {
+                scene_buffer_data.static_objects[object_id].diffuse_map =
+                    static_cast<int32_t>(skinning_queue_[i]->diffuse_map.value().index());
+            }
+        } else {
+            scene_buffer_data.static_objects[object_id].diffuse_map = -1;
+        }
+
+        if (skinning_queue_[i]->normal_map.has_value()) {
+            if (nullptr != texture_pool_->refResource(skinning_queue_[i]->normal_map.value(), current_frame_)) {
+                scene_buffer_data.static_objects[object_id].normal_map =
+                    static_cast<int32_t>(skinning_queue_[i]->normal_map.value().index());
+            }
+        } else {
+            scene_buffer_data.static_objects[object_id].normal_map = -1;
+        }
+
+        const auto actor_id = skinning_queue_[i]->skinned_mesh;
+        auto *actor_ref = actor_mesh_pool_->refResource(actor_id, current_frame_);
+        auto *mesh_ref = anim_mesh_pool_->refResource(actor_ref->inputMesh(), current_frame_);
+
+        if (!actor_ref) {
+            continue;
+        }
+
+        actor_ref->transformBuffer().upload(current_frame_);
+
+        auto &draw_call = indexed_draws[object_id];
+
+        draw_call.vertex_buffer = actor_ref->vertexBuffer(current_frame_).buffer();
+        draw_call.index_buffer = mesh_ref->indexBuffer().buffer();
+        draw_call.num_indices = mesh_ref->numIndices();
     }
 
     auto command_buffer = current_frame.command_buffer;
@@ -1181,8 +1338,39 @@ auto Renderer::frame() -> util::Result {
 
     VK_CHECK_ERROR(vkBeginCommandBuffer(command_buffer, &command_buffer_begin_desc));
 
+    // invoke compute shader skinning
+    vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, skinning_pass_->pipeline());
+
+    ComputeSkinningPass::cbPushConstantBuffer skinning_constants;
+
+    for (uint32_t i = 0; i < skinning_queue_fill_; ++i) {
+        const auto actor_id = skinning_queue_[i]->skinned_mesh;
+        auto *actor = actor_mesh_pool_->getResource(actor_id);
+        auto *input_mesh = anim_mesh_pool_->getResource(actor->inputMesh());
+
+        // pass the buffers using push constants
+        skinning_constants.input_buffer = input_mesh->vertexBuffer().deviceAddress();
+        skinning_constants.output_buffer = actor->vertexBuffer(current_frame_).deviceAddress();
+        skinning_constants.bone_buffer = actor->transformBuffer().deviceAddress(current_frame_);
+
+        const auto num_dispatches = (input_mesh->num_vertices_ + kVertexBufferAlign - 1) / kVertexBufferAlign;
+
+        vkCmdPushConstants(
+            command_buffer, skinning_pass_->pipelineLayout(), VK_SHADER_STAGE_COMPUTE_BIT, 0,
+            sizeof(ComputeSkinningPass::cbPushConstantBuffer), &skinning_constants);
+        vkCmdDispatch(command_buffer, num_dispatches, 1, 1);
+    }
+
     // upload buffer data - this also inserts a memory barrier!!
     scene_buffer->upload(command_buffer);
+
+    VkMemoryBarrier2 compute_mem_barrier = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        .srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT,
+        .dstAccessMask = VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT,
+    };
 
     std::array<VkImageMemoryBarrier2, 2> output_barriers = {
         VkImageMemoryBarrier2{
@@ -1214,13 +1402,15 @@ auto Renderer::frame() -> util::Result {
         },
     };
 
-    VkDependencyInfo output_dependency_desc = {
+    VkDependencyInfo render_dependency_desc = {
         .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .memoryBarrierCount = 1,
+        .pMemoryBarriers = &compute_mem_barrier,
         .imageMemoryBarrierCount = static_cast<uint32_t>(output_barriers.size()),
         .pImageMemoryBarriers = output_barriers.data(),
     };
 
-    vkCmdPipelineBarrier2(command_buffer, &output_dependency_desc);
+    vkCmdPipelineBarrier2(command_buffer, &render_dependency_desc);
 
     VkRenderingAttachmentInfo color_attachment_desc = {
         .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
@@ -1277,16 +1467,11 @@ auto Renderer::frame() -> util::Result {
     VkDeviceSize vertex_offset = 0;
     OpaqueGeometryPass::cbPushConstantBuffer push_constants;
 
-    for (uint32_t i = 0; i < draw_queue_fill_; ++i) {
-        const auto &draw_call = draw_queue_[i].value();
-        const auto mesh_ref = mesh_pool_->refResource(draw_call.mesh, current_frame_);
+    for (uint32_t i = 0; i < num_indexed_draws; ++i) {
+        const auto &draw_call = indexed_draws[i];
 
-        if (!mesh_ref) {
-            continue;
-        }
-
-        vkCmdBindVertexBuffers(command_buffer, 0, 1, mesh_ref->vertexBuffer().addrOf(), &vertex_offset);
-        vkCmdBindIndexBuffer(command_buffer, mesh_ref->indexBuffer().buffer(), 0, VK_INDEX_TYPE_UINT32);
+        vkCmdBindVertexBuffers(command_buffer, 0, 1, &draw_call.vertex_buffer, &vertex_offset);
+        vkCmdBindIndexBuffer(command_buffer, draw_call.index_buffer, 0, VK_INDEX_TYPE_UINT32);
 
         push_constants.frame_heap = scene_buffer->deviceAddress();
         push_constants.object_id = i;
@@ -1295,7 +1480,7 @@ auto Renderer::frame() -> util::Result {
             command_buffer, geometry_pass_->pipelineLayout(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
             0, sizeof(OpaqueGeometryPass::cbPushConstantBuffer), &push_constants);
 
-        vkCmdDrawIndexed(command_buffer, mesh_ref->numIndices(), 1, 0, 0, 0);
+        vkCmdDrawIndexed(command_buffer, draw_call.num_indices, 1, 0, 0, 0);
     }
 
     vkCmdEndRendering(command_buffer);
@@ -1321,6 +1506,7 @@ auto Renderer::frame() -> util::Result {
     vkCmdPipelineBarrier2(command_buffer, &dependency_present);
     vkEndCommandBuffer(command_buffer);
 
+    skinning_queue_fill_ = 0;
     draw_queue_fill_ = 0;
 
     VkPipelineStageFlags wait_stages = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;

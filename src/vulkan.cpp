@@ -131,6 +131,15 @@ auto Buffer::flush(VkDeviceSize offset, VkDeviceSize size) const {
     VK_CHECK_ERROR(vmaFlushAllocation(allocator_, allocation_, offset, size));
 }
 
+auto Buffer::deviceAddress() const -> VkDeviceAddress {
+    VkBufferDeviceAddressInfo addr_info = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
+        .buffer = buffer_,
+    };
+
+    return vkGetBufferDeviceAddress(device_, &addr_info);
+}
+
 auto Buffer::destroy() noexcept -> void {
     if (VK_NULL_HANDLE != buffer_) {
         vmaDestroyBuffer(allocator_, buffer_, allocation_);
@@ -455,15 +464,17 @@ auto getCompatibleDevices(VkInstance instance, VkSurfaceKHR surface)
 
         for (uint32_t index = 0; index < num_queue_families; ++index) {
             VkBool32 is_graphics = (queue_family_properties[index].queueFlags & VK_QUEUE_GRAPHICS_BIT);
+            VkBool32 is_compute = (queue_family_properties[index].queueFlags & VK_QUEUE_COMPUTE_BIT);
+            VkBool32 is_graphics_compute = is_graphics && is_compute;
             VkBool32 is_present = VK_FALSE;
 
             VK_CHECK_ERROR(vkGetPhysicalDeviceSurfaceSupportKHR(physical_device, index, surface, &is_present));
 
-            if (is_graphics && is_present) {
+            if (is_graphics_compute && is_present) {
                 graphics_family = index;
                 present_family = index;
                 break;
-            } else if (is_graphics && !graphics_family.has_value()) {
+            } else if (is_graphics_compute && !graphics_family.has_value()) {
                 graphics_family = index;
             } else if (is_present && !present_family.has_value()) {
                 present_family = index;
@@ -774,10 +785,17 @@ auto Context::MemoryHelper::submitCommandBuffer(VkSemaphore semaphore, uint64_t 
     LogInfo("vulkan: memory helper end command submission logic");
 }
 
-auto Context::MemoryHelper::createBuffer(VkBufferUsageFlags usage, std::span<const uint8_t> data) const -> Buffer {
+auto Context::MemoryHelper::createBuffer(
+    VkBufferUsageFlags usage, std::span<const uint8_t> data, VkDeviceSize size) const -> Buffer {
+    if (size == 0) {
+        size = data.size();
+    }
+
+    assert(size >= data.size() && "invalid buffer size requested");
+
     VkBufferCreateInfo create_info = {
         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-        .size = data.size(),
+        .size = size,
         .usage = usage | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
     };

@@ -56,6 +56,7 @@ public:
     auto flush(VkDeviceSize offset = 0ull, VkDeviceSize size = VK_WHOLE_SIZE) const;
 
     auto cpuMappedPointer() const -> void * { return allocation_info_.pMappedData; }
+    auto deviceAddress() const -> VkDeviceAddress;
 
 private:
     auto destroy() noexcept -> void;
@@ -147,7 +148,8 @@ public:
         MemoryHelper(MemoryHelper &&) noexcept = delete;
         auto operator=(MemoryHelper &&) noexcept = delete;
 
-        auto createBuffer(VkBufferUsageFlags usage, std::span<const uint8_t> data) const -> Buffer;
+        auto createBuffer(VkBufferUsageFlags usage, std::span<const uint8_t> data, VkDeviceSize size = 0) const
+            -> Buffer;
         auto createStagingBuffer(VkDeviceSize size) const -> Buffer;
         auto createDeviceBuffer(VkBufferUsageFlags usage, VkDeviceSize size) const -> Buffer;
         auto createSharedBuffer(VkBufferUsageFlags usage, VkDeviceSize size) const -> Buffer;
