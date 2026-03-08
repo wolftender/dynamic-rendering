@@ -1353,7 +1353,7 @@ auto Renderer::frame() -> util::Result {
         skinning_constants.output_buffer = actor->vertexBuffer(current_frame_).deviceAddress();
         skinning_constants.bone_buffer = actor->transformBuffer().deviceAddress(current_frame_);
 
-        const auto num_dispatches = input_mesh->num_vertices_ / kVertexBufferAlign;
+        const auto num_dispatches = (input_mesh->num_vertices_ + kVertexBufferAlign - 1) / kVertexBufferAlign;
 
         vkCmdPushConstants(
             command_buffer, skinning_pass_->pipelineLayout(), VK_SHADER_STAGE_COMPUTE_BIT, 0,
