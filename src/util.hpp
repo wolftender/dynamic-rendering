@@ -147,8 +147,8 @@ public:
     }
 
     template <typename T = f32> auto readVec2() -> std::optional<glm::vec<2, T>> {
-        const auto x = read<f32>();
-        const auto y = read<f32>();
+        const auto x = read<T>();
+        const auto y = read<T>();
 
         if (!x.has_value() || !y.has_value()) {
             return std::nullopt;
@@ -158,9 +158,9 @@ public:
     }
 
     template <typename T = f32> auto readVec3() -> std::optional<glm::vec<3, T>> {
-        const auto x = read<f32>();
-        const auto y = read<f32>();
-        const auto z = read<f32>();
+        const auto x = read<T>();
+        const auto y = read<T>();
+        const auto z = read<T>();
 
         if (!x.has_value() || !y.has_value() || !z.has_value()) {
             return std::nullopt;
@@ -170,10 +170,10 @@ public:
     }
 
     template <typename T = f32> auto readVec4() -> std::optional<glm::vec<4, T>> {
-        const auto x = read<f32>();
-        const auto y = read<f32>();
-        const auto z = read<f32>();
-        const auto w = read<f32>();
+        const auto x = read<T>();
+        const auto y = read<T>();
+        const auto z = read<T>();
+        const auto w = read<T>();
 
         if (!x.has_value() || !y.has_value() || !z.has_value() || !w.has_value()) {
             return std::nullopt;
@@ -183,16 +183,16 @@ public:
     }
 
     template <typename T = f32> auto readQuat() -> std::optional<glm::qua<T>> {
-        const auto x = read<f32>();
-        const auto y = read<f32>();
-        const auto z = read<f32>();
-        const auto w = read<f32>();
+        const auto x = read<T>();
+        const auto y = read<T>();
+        const auto z = read<T>();
+        const auto w = read<T>();
 
         if (!x.has_value() || !y.has_value() || !z.has_value() || !w.has_value()) {
             return std::nullopt;
         }
 
-        return glm::qua<T>{*x, *y, *z, *w};
+        return glm::qua<T>{*w, *x, *y, *z}; // this constructor has order WXYZ
     }
 
 private:

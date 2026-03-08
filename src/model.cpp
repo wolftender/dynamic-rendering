@@ -144,7 +144,7 @@ auto Model::Pose::fromModel(const Model &model) -> std::unique_ptr<Pose> {
 }
 
 auto Model::Pose::recomputeTransformSubtree(NodeId root) -> void {
-    glm::fmat4x4 matrix{1.0f};
+    glm::fmat4x4 parent_matrix{1.0f};
 
     auto node = getNode(root);
     if (!node) {
@@ -154,15 +154,16 @@ auto Model::Pose::recomputeTransformSubtree(NodeId root) -> void {
     if (node->parent_.has_value()) {
         const auto parent = getNode(node->parent_.value());
         if (parent) {
-            matrix = parent->transform();
+            parent_matrix = parent->transform();
         }
     }
 
     // T * R * S
-    matrix = glm::translate(matrix, node->translation());
-    matrix = glm::toMat4(node->rotation()) * matrix;
-    matrix = glm::scale(matrix, node->scale_);
-    node->transform_ = matrix;
+    const auto translation = glm::translate(glm::fmat4x4{1.0f}, node->translation());
+    const auto rotation = glm::toMat4(node->rotation());
+    const auto scale = glm::scale(glm::fmat4x4{1.0f}, node->scale());
+
+    node->transform_ = parent_matrix * translation * rotation * scale;
 
     for (auto &child : node->children_) {
         recomputeTransformSubtree(child);
@@ -400,7 +401,7 @@ auto Model::render(Renderer &renderer, const Pose &pose, const glm::fmat4x4 &wor
                 for (uint32_t bone_id = 0; bone_id < skin.nodes().size(); ++bone_id) {
                     const auto &bone = skin.nodes()[bone_id];
                     const auto &bone_node = pose.nodes_[bone.node.index()];
-                    glm::fmat4x4 joint_matrix = bone.inverse_bind * bone_node.transform();
+                    glm::fmat4x4 joint_matrix = bone_node.transform() * bone.inverse_bind;
 
                     actor_mesh.skinningBuffer().bones[bone_id] = joint_matrix;
                 }
@@ -408,7 +409,7 @@ auto Model::render(Renderer &renderer, const Pose &pose, const glm::fmat4x4 &wor
 
             Renderer::SkinnedDrawDescription desc = {
                 .skinned_mesh = actor_mesh_id,
-                .world_matrix = matrix,
+                .world_matrix = world,
             };
 
             if (material.diffuse().has_value()) {
@@ -686,6 +687,10 @@ auto Model::fromAct(Renderer *renderer, const act::Model &act_model) -> std::uni
             LogError("model: fatal, invalid id");
             return nullptr;
         }
+
+        node->setTranslation(act_node.translation);
+        node->setRotation(act_node.rotation);
+        node->setScale(act_node.scale);
 
         if (act_node.mesh_id.has_value()) {
             nodes_with_meshes.push_back(act_node_id);

@@ -662,9 +662,15 @@ public:
         }
     }
 
+    template <std::invocable<NodeId, const Node &> F> auto iterateNodes(F consumer) const -> void {
+        for (uint32_t id = 0; id < nodes_.size(); ++id) {
+            consumer(NodeId{id}, nodes_[id]);
+        }
+    }
+
     template <std::invocable<NodeId, const Node &> F> auto iterateMeshNodes(F consumer) const -> void {
         for (const auto &id : mesh_nodes_) {
-            consumer(nodes_[id.index()]);
+            consumer(id, nodes_[id.index()]);
         }
     }
 
@@ -728,6 +734,7 @@ public:
                 channel_data[channel_id].next_keyframe = 0;
                 channel_data[channel_id].prev_keyframe_time = 0.0f;
                 channel_data[channel_id].next_keyframe_time = 99999.0f;
+                return;
             }
 
             // otherwise pick the first keyframe and the second keyframe

@@ -369,6 +369,10 @@ auto parseNodeBlock(std::span<const u8> block_buffer) -> std::optional<Model::No
     BinaryReader block_reader{block_buffer};
     Model::Node node = {};
 
+    node.translation = glm::fvec3{0.0f, 0.0f, 0.0f};
+    node.scale = glm::fvec3{1.0f, 1.0f, 1.0f};
+    node.rotation = glm::fquat{1.0f, 0.0f, 0.0f, 0.0f}; // this constructor has order WXYZ
+
     while (auto command_type = readCommandType(block_reader)) {
         switch (*command_type) {
         case act::CommandType::eNodeSetMesh:
@@ -709,7 +713,7 @@ auto parseAnimChannelBlock(std::span<const u8> block_buffer) -> std::optional<Mo
             f32 time;
 
             for (auto i = 0u; i < num_keyframes; ++i) {
-                READ_OR_ERROR(u32, block_reader, time);
+                READ_OR_ERROR(f32, block_reader, time);
                 timeline.emplace_back(time);
             }
 

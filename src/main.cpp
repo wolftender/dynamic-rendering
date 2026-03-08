@@ -364,6 +364,7 @@ auto ApplicationState::run() -> util::Result {
 
     const auto animations = test_model_->makeAnimationList();
     auto controller = test_model_->createController(animations.front());
+    auto bind_pose = test_model_->createPose();
 
     while (!glfwWindowShouldClose(window_handle_)) {
         const auto now = Clock::now();
@@ -378,21 +379,36 @@ auto ApplicationState::run() -> util::Result {
         const glm::fvec3 camera_position = {
             kCameraRadius * ::cosf(simulation_time), kCameraRadius, kCameraRadius * ::sinf(simulation_time)};
 
-        renderer_->camera().setPosition(camera_position);
+        renderer_->camera().setPosition(glm::fvec3{0.0f, 0.0f, 4.0f});
 
-        for (const auto &position : kCubePositions) {
-            graphics::Renderer::OpaqueDrawDescription draw_desc = {
-                .mesh = cube_mesh_.value(),
-                .world_matrix = glm::fmat4x4{1.0f},
-            };
+        // test_model_->iterateNodes([&](graphics::Model::NodeId id, [[maybe_unused]] const auto &node) {
+        //     const auto &pose_node = *controller.pose().getNode(id);
 
-            draw_desc.world_matrix =
-                glm::scale(glm::translate(draw_desc.world_matrix, position), glm::fvec3{0.5f, 0.5f, 0.5f});
-            renderer_->drawOpaqueMesh(std::move(draw_desc));
-        }
+        //     glm::fmat4x4 s1 = glm::scale(glm::fmat4x4{1.0f}, glm::fvec3{0.0001f, 0.0005f, 0.0001f});
+        //     glm::fmat4x4 s2 = glm::scale(glm::fmat4x4{1.0f}, glm::fvec3{3.5f, 3.5f, 3.5f});
 
-        test_model_->render(
-            *renderer_.get(), controller.pose(), glm::scale(glm::fmat4x4{1.0f}, glm::fvec3{350.0f, 350.0f, 350.0f}));
+        //     glm::fmat4x4 world_matrix = s2 * pose_node.transform() * s1;
+
+        //     graphics::Renderer::OpaqueDrawDescription draw_desc = {
+        //         .mesh = cube_mesh_.value(),
+        //         .world_matrix = world_matrix,
+        //     };
+
+        //     renderer_->drawOpaqueMesh(std::move(draw_desc));
+        // });
+
+        // for (const auto &position : kCubePositions) {
+        //     graphics::Renderer::OpaqueDrawDescription draw_desc = {
+        //         .mesh = cube_mesh_.value(),
+        //         .world_matrix = glm::fmat4x4{1.0f},
+        //     };
+
+        //     draw_desc.world_matrix =
+        //         glm::scale(glm::translate(draw_desc.world_matrix, position), glm::fvec3{0.5f, 0.5f, 0.5f});
+        //     renderer_->drawOpaqueMesh(std::move(draw_desc));
+        // }
+
+        test_model_->render(*renderer_.get(), *bind_pose, glm::scale(glm::fmat4x4{1.0f}, glm::fvec3{3.5f, 3.5f, 3.5f}));
 
         if (util::Result::eSuccess != renderer_->frame()) {
             LogError("failed to render frame");
