@@ -363,7 +363,7 @@ auto ApplicationState::run() -> util::Result {
     };
 
     const auto animations = test_model_->makeAnimationList();
-    auto controller = test_model_->createController(animations.front());
+    auto controller = test_model_->createController(animations[4]);
     auto bind_pose = test_model_->createPose();
 
     while (!glfwWindowShouldClose(window_handle_)) {
@@ -408,7 +408,8 @@ auto ApplicationState::run() -> util::Result {
         //     renderer_->drawOpaqueMesh(std::move(draw_desc));
         // }
 
-        test_model_->render(*renderer_.get(), *bind_pose, glm::scale(glm::fmat4x4{1.0f}, glm::fvec3{3.5f, 3.5f, 3.5f}));
+        test_model_->render(
+            *renderer_.get(), controller.pose(), glm::scale(glm::fmat4x4{1.0f}, glm::fvec3{3.5f, 3.5f, 3.5f}));
 
         if (util::Result::eSuccess != renderer_->frame()) {
             LogError("failed to render frame");

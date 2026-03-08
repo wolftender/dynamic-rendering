@@ -75,6 +75,6 @@ float4 fsMain(VertexShaderOutput input, uniform cbFrameHeapBuffer *frame_heap, u
     if (diffuse_map >= 0) {
         return float4(textures[diffuse_map].Sample(input.uv).rgb, 1.0);
     } else {
-        return float4(input.normal, 1.0);
+        return float4(input.color, 1.0);
     }
 }
