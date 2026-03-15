@@ -111,6 +111,7 @@ private:
     struct TextureTag {};
     struct AnimatedMeshTag {};
     struct ActorMeshTag {};
+    struct VectorMeshTag {};
 
     class BufferHelper {
     public:
@@ -181,6 +182,7 @@ public:
     static constexpr uint32_t kNumMeshPoolSize = 512;
     static constexpr uint32_t kNumAnimMeshPoolSize = 128;
     static constexpr uint32_t kVertexBufferAlign = 64;
+    static constexpr uint32_t kNumMaxVectorMeshes = 1024;
 
     struct cbFrameHeapBuffer {
         struct cbPointLightData {
@@ -212,6 +214,21 @@ public:
 
     struct cbSkinningBuffer {
         glm::fmat4x4 bones[kNumMaxBonesPerObject];
+    };
+
+    struct cbVectorHeapBuffer {
+        struct cbVectorObjectData {
+            glm::fmat4x4 world;
+            int32_t diffuse_map;
+            int32_t reserved0;
+            int32_t reserved1;
+            int32_t reserved2;
+        };
+
+        glm::fmat4x4 view_projection;
+        std::array<cbVectorObjectData, kNumMaxVectorMeshes> vector_objects;
+
+        uint32_t num_vector_objects;
     };
 
     class Mesh;
@@ -290,6 +307,7 @@ public:
         virtual ~IShaderLoader() = default;
         virtual auto loadSkinningPassShader() const -> std::optional<std::vector<uint32_t>> = 0;
         virtual auto loadGeometryPassShader() const -> std::optional<std::vector<uint32_t>> = 0;
+        virtual auto loadVectorPassShader() const -> std::optional<std::vector<uint32_t>> = 0;
 
         IShaderLoader(const IShaderLoader &) = delete;
         auto operator=(const IShaderLoader &) = delete;
@@ -316,6 +334,7 @@ public:
     using TextureId = ResourceId<Texture, TextureTag>;
     using AnimatedMeshId = ResourceId<Mesh, AnimatedMeshTag>;
     using ActorMeshId = ResourceId<ActorMesh, ActorMeshTag>;
+    using VectorMeshId = ResourceId<Mesh, VectorMeshTag>;
 
     struct Description {
         Context *context;
@@ -337,6 +356,40 @@ public:
 
         std::optional<TextureId> diffuse_map;
         std::optional<TextureId> normal_map;
+    };
+
+    struct VectorDrawDescription {
+        VectorMeshId vector_mesh;
+        glm::fmat4x4 world_matrix;
+
+        std::optional<TextureId> diffuse_map;
+    };
+
+    struct VectorVertex {
+        glm::fvec3 position;
+        glm::fvec2 uv;
+        glm::fvec4 color;
+
+        VectorVertex(const glm::fvec2 &position, const glm::fvec2 &uv)
+            : position{position, 0.0f}, uv{uv}, color{1.0f} {}
+
+        VectorVertex(const glm::fvec2 &position, const glm::fvec4 &color)
+            : position{position, 0.0f}, uv{0.0f}, color{color} {}
+
+        VectorVertex(const glm::fvec3 &position, const glm::fvec2 &uv) : position{position}, uv{uv}, color{1.0f} {}
+
+        VectorVertex(const glm::fvec3 &position, const glm::fvec4 &color)
+            : position{position}, uv{0.0f}, color{color} {}
+
+        VectorVertex(const glm::fvec3 &position, const glm::fvec2 &uv, const glm::fvec4 &color)
+            : position{position}, uv{uv}, color{color} {}
+
+        VectorVertex(float x, float y, float z, float u, float v) : position{x, y, z}, uv{u, v}, color{1.0f} {}
+        VectorVertex(float x, float y, float z, float r, float g, float b, float a)
+            : position{x, y, z}, uv{0.0f}, color{r, g, b, a} {}
+
+        VectorVertex(float x, float y, float z, float u, float v, float r, float g, float b, float a)
+            : position{x, y, z}, uv{u, v}, color{r, g, b, a} {}
     };
 
     struct StaticVertex {
@@ -623,6 +676,32 @@ public:
         return addActorMesh(std::move(actor_mesh.value()));
     }
 
+    template <util::TypedContiguousRange<VectorVertex> VR, util::TypedContiguousRange<const uint32_t> IR>
+    auto createVectorMesh(const VR &vertex_input_range, const IR &index_input_range) -> std::optional<VectorMeshId> {
+        const auto vertex_buffer_ptr = reinterpret_cast<const uint8_t *>(std::ranges::data(vertex_input_range));
+        const auto vertex_buffer_size = std::ranges::size(vertex_input_range) * sizeof(VectorVertex);
+
+        const auto index_buffer_ptr = std::ranges::data(index_input_range);
+        const auto index_buffer_size = std::ranges::size(index_input_range);
+
+        Mesh::Description desc = {
+            .vertex_buffer = {vertex_buffer_ptr, vertex_buffer_size},
+            .indices = {index_buffer_ptr, index_buffer_size},
+            .vertex_size = sizeof(VectorVertex),
+            .num_vertices = static_cast<uint32_t>(std::ranges::size(vertex_input_range)),
+            .vertex_buffer_flags = 0,
+            .index_buffer_flags = 0,
+        };
+
+        auto mesh = Mesh::create(this, desc);
+
+        if (!mesh.has_value()) {
+            return std::nullopt;
+        }
+
+        return addVectorMesh(std::move(mesh.value()));
+    }
+
     template <std::invocable<const Texture &> F> auto withTexture(TextureId handle, F consumer) const {
         auto texture = getTexture(handle);
         if (!texture) {
@@ -668,16 +747,27 @@ public:
         consumer(*actor_mesh);
     }
 
+    template <std::invocable<const Mesh &> F> auto withVectorMesh(VectorMeshId handle, F consumer) {
+        auto vector_mesh = getVectorMesh(handle);
+        if (!vector_mesh) {
+            return;
+        }
+
+        consumer(*vector_mesh);
+    }
+
     auto deleteMesh(MeshId handle) { unrefMesh(handle); }
     auto deleteTexture(TextureId handle) { unrefTexture(handle); }
     auto deleteAnimMesh(AnimatedMeshId handle) { unrefAnimMesh(handle); }
     auto deleteActorMesh(ActorMeshId handle) { unrefActorMesh(handle); }
+    auto deleteVectorMesh(VectorMeshId handle) { unrefVectorMesh(handle); }
 
     auto getMesh(const MeshId &id) const -> const Mesh *;
     auto getTexture(const TextureId &id) const -> const Texture *;
     auto getAnimMesh(const AnimatedMeshId &id) const -> const Mesh *;
     auto getActorMesh(const ActorMeshId &id) const -> const ActorMesh *;
     auto getActorMesh(const ActorMeshId &id) -> ActorMesh *;
+    auto getVectorMesh(const VectorMeshId &id) const -> const Mesh *;
 
     auto frame() -> util::Result;
 
@@ -696,6 +786,15 @@ public:
         }
 
         skinning_queue_[skinning_queue_fill_++] = std::move(desc);
+        return util::Result::eSuccess;
+    }
+
+    auto drawVectorMesh(VectorDrawDescription &&desc) -> util::Result {
+        if (vector_queue_fill_ == vector_queue_.size()) {
+            return util::Result::eFailure;
+        }
+
+        vector_queue_[vector_queue_fill_++] = std::move(desc);
         return util::Result::eSuccess;
     }
 
@@ -765,8 +864,41 @@ private:
         VkPipeline pipeline_ = VK_NULL_HANDLE;
     };
 
+    class VectorGraphicsPass final {
+    public:
+        struct cbPushConstantBuffer {
+            VkDeviceAddress frame_heap;
+            uint32_t object_id;
+        };
+
+        static auto create(Renderer *renderer, const IShaderLoader *shader_loader)
+            -> std::unique_ptr<VectorGraphicsPass>;
+
+        ~VectorGraphicsPass() noexcept;
+
+        VectorGraphicsPass(const VectorGraphicsPass &) = delete;
+        auto operator=(const VectorGraphicsPass &) = delete;
+
+        VectorGraphicsPass(VectorGraphicsPass &&) noexcept = delete;
+        auto operator=(VectorGraphicsPass &&) noexcept = delete;
+
+        auto shaderModule() const -> VkShaderModule { return shader_module_; }
+        auto pipelineLayout() const -> VkPipelineLayout { return pipeline_layout_; }
+        auto pipeline() const -> VkPipeline { return pipeline_; }
+
+    private:
+        VectorGraphicsPass() = default;
+
+        Renderer *renderer_ = nullptr;
+
+        VkShaderModule shader_module_ = VK_NULL_HANDLE;
+        VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
+        VkPipeline pipeline_ = VK_NULL_HANDLE;
+    };
+
     struct FrameData {
         std::unique_ptr<TypedBufferHelper<cbFrameHeapBuffer>> scene_buffer;
+        std::unique_ptr<TypedBufferHelper<cbVectorHeapBuffer>> vector_buffer;
         VkCommandBuffer command_buffer = VK_NULL_HANDLE;
 
         VkFence fence = VK_NULL_HANDLE;
@@ -777,11 +909,13 @@ private:
     auto addTexture(Texture &&texture) -> std::optional<TextureId>;
     auto addAnimMesh(Mesh &&mesh) -> std::optional<AnimatedMeshId>;
     auto addActorMesh(ActorMesh &&mesh) -> std::optional<ActorMeshId>;
+    auto addVectorMesh(Mesh &&mesh) -> std::optional<VectorMeshId>;
 
     auto unrefMesh(const MeshId &id) -> void;
     auto unrefTexture(const TextureId &id) -> void;
     auto unrefAnimMesh(const AnimatedMeshId &id) -> void;
     auto unrefActorMesh(const ActorMeshId &id) -> void;
+    auto unrefVectorMesh(const VectorMeshId &id) -> void;
 
     auto createSwapchainData() -> void;
     auto getCurrentFrame() -> FrameData & { return frames_[current_frame_]; }
@@ -815,16 +949,20 @@ private:
     std::unique_ptr<ResourcePool<Mesh, MeshTag, kNumMeshPoolSize>> mesh_pool_;
     std::unique_ptr<ResourcePool<Mesh, AnimatedMeshTag, kNumAnimMeshPoolSize>> anim_mesh_pool_;
     std::unique_ptr<ResourcePool<ActorMesh, ActorMeshTag, kNumMaxSkinnedObjects>> actor_mesh_pool_;
+    std::unique_ptr<ResourcePool<Mesh, VectorMeshTag, kNumMaxVectorMeshes>> vector_mesh_pool_;
 
     // render passes
     std::unique_ptr<ComputeSkinningPass> skinning_pass_ = nullptr;
     std::unique_ptr<OpaqueGeometryPass> geometry_pass_ = nullptr;
+    std::unique_ptr<VectorGraphicsPass> vector_pass_ = nullptr;
 
     // draw queue
     std::array<std::optional<SkinnedDrawDescription>, kNumMaxSkinnedObjects> skinning_queue_;
     std::array<std::optional<OpaqueDrawDescription>, kNumMaxStaticObjects> draw_queue_;
+    std::array<std::optional<VectorDrawDescription>, kNumMaxVectorMeshes> vector_queue_;
     uint32_t skinning_queue_fill_ = 0;
     uint32_t draw_queue_fill_ = 0;
+    uint32_t vector_queue_fill_ = 0;
 
     uint32_t current_frame_ = 0;
 };

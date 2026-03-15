@@ -11,11 +11,13 @@ set(GAME_SOURCE_FILE_LIST
     ${GAME_SRC_DIR}/renderer.cpp
     ${GAME_SRC_DIR}/assets.cpp
     ${GAME_SRC_DIR}/model.cpp
+    ${GAME_SRC_DIR}/canvas.cpp
 )
 
 # compresset assets
 add_slang_shader(${GAME_SRC_DIR}/shaders/shader.slang)
 add_slang_shader(${GAME_SRC_DIR}/shaders/skinning.slang)
+add_slang_shader(${GAME_SRC_DIR}/shaders/vector.slang)
 add_asset_compressed(${ASSET_DIR}/wakamo.act)
 add_packed_assets(${CMAKE_CURRENT_BINARY_DIR}/assets.arc)
 

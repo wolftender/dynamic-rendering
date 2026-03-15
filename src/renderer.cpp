@@ -792,10 +792,12 @@ auto Renderer::create(const Description &description) -> std::unique_ptr<Rendere
     renderer->mesh_pool_ = std::make_unique<ResourcePool<Mesh, MeshTag, kNumMeshPoolSize>>();
     renderer->anim_mesh_pool_ = std::make_unique<ResourcePool<Mesh, AnimatedMeshTag, kNumAnimMeshPoolSize>>();
     renderer->actor_mesh_pool_ = std::make_unique<ResourcePool<ActorMesh, ActorMeshTag, kNumMaxSkinnedObjects>>();
+    renderer->vector_mesh_pool_ = std::make_unique<ResourcePool<Mesh, VectorMeshTag, kNumMaxVectorMeshes>>();
     renderer->createSwapchainData();
 
     for (size_t i = 0; i < kNumFramesInFlight; ++i) {
         renderer->frames_[i].scene_buffer = TypedBufferHelper<cbFrameHeapBuffer>::create(renderer.get());
+        renderer->frames_[i].vector_buffer = TypedBufferHelper<cbVectorHeapBuffer>::create(renderer.get());
     }
 
     // allocate command buffers
@@ -852,6 +854,12 @@ auto Renderer::create(const Description &description) -> std::unique_ptr<Rendere
         return nullptr;
     }
 
+    renderer->vector_pass_ = VectorGraphicsPass::create(renderer.get(), description.shader_loader.get());
+    if (!renderer->vector_pass_) {
+        LogError("vulkan: renderer cannot initialize vector graphics pipeline");
+        return nullptr;
+    }
+
     return renderer;
 }
 
@@ -871,6 +879,10 @@ auto Renderer::addActorMesh(ActorMesh &&mesh) -> std::optional<ActorMeshId> {
     return actor_mesh_pool_->storeResource(std::move(mesh), current_frame_);
 }
 
+auto Renderer::addVectorMesh(Mesh &&mesh) -> std::optional<VectorMeshId> {
+    return vector_mesh_pool_->storeResource(std::move(mesh), current_frame_);
+}
+
 auto Renderer::getMesh(const MeshId &id) const -> const Mesh * { return mesh_pool_->getResource(id); }
 auto Renderer::getTexture(const TextureId &id) const -> const Texture * { return texture_pool_->getResource(id); }
 auto Renderer::getAnimMesh(const AnimatedMeshId &id) const -> const Mesh * { return anim_mesh_pool_->getResource(id); }
@@ -879,12 +891,17 @@ auto Renderer::getActorMesh(const ActorMeshId &id) const -> const ActorMesh * {
     return actor_mesh_pool_->getResource(id);
 }
 
+auto Renderer::getVectorMesh(const VectorMeshId &id) const -> const Mesh * {
+    return vector_mesh_pool_->getResource(id);
+}
+
 auto Renderer::getActorMesh(const ActorMeshId &id) -> ActorMesh * { return actor_mesh_pool_->getResource(id); }
 
 auto Renderer::unrefMesh(const MeshId &id) -> void { mesh_pool_->destroyResource(id); }
 auto Renderer::unrefTexture(const TextureId &id) -> void { texture_pool_->destroyResource(id); }
 auto Renderer::unrefAnimMesh(const AnimatedMeshId &id) -> void { anim_mesh_pool_->destroyResource(id); }
 auto Renderer::unrefActorMesh(const ActorMeshId &id) -> void { actor_mesh_pool_->destroyResource(id); }
+auto Renderer::unrefVectorMesh(const VectorMeshId &id) -> void { vector_mesh_pool_->destroyResource(id); }
 
 auto Renderer::createSwapchainData() -> void {
     const auto surface_extent = context_->surfaceExtent();
@@ -1188,6 +1205,185 @@ Renderer::OpaqueGeometryPass::~OpaqueGeometryPass() noexcept {
     }
 }
 
+auto Renderer::VectorGraphicsPass::create(Renderer *renderer, const IShaderLoader *shader_loader)
+    -> std::unique_ptr<VectorGraphicsPass> {
+    std::unique_ptr<VectorGraphicsPass> pass{new (std::nothrow) VectorGraphicsPass()};
+    if (!pass) {
+        LogError("vulkan: renderer cannot allocate opaque geometry pass resources");
+        return nullptr;
+    }
+
+    pass->renderer_ = renderer;
+
+    const auto context = pass->renderer_->context_;
+    const auto device = pass->renderer_->context_->device();
+
+    const auto shader_buffer = shader_loader->loadVectorPassShader();
+    if (!shader_buffer) {
+        LogError("vulkan: renderer cannot load vector graphics shader");
+        return nullptr;
+    }
+
+    VkShaderModuleCreateInfo shader_module_info = {
+        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+        .codeSize = shader_buffer->size() * sizeof(uint32_t),
+        .pCode = shader_buffer->data(),
+    };
+
+    VK_CHECK_ERROR(vkCreateShaderModule(device, &shader_module_info, nullptr, &pass->shader_module_));
+
+    // graphics pipeline
+    VkPushConstantRange push_constant_range = {
+        .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+        .size = sizeof(cbPushConstantBuffer),
+    };
+
+    VkDescriptorSetLayout descriptor_layout = pass->renderer_->texture_pool_->descriptorSetLayout();
+
+    VkPipelineLayoutCreateInfo pipeline_layout_desc = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        .setLayoutCount = 1,
+        .pSetLayouts = &descriptor_layout,
+        .pushConstantRangeCount = 1,
+        .pPushConstantRanges = &push_constant_range,
+    };
+
+    VK_CHECK_ERROR(vkCreatePipelineLayout(device, &pipeline_layout_desc, nullptr, &pass->pipeline_layout_));
+
+    VkVertexInputBindingDescription vertex_binding = {
+        .binding = 0,
+        .stride = sizeof(VectorVertex),
+        .inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
+    };
+
+    std::array<VkVertexInputAttributeDescription, 3> vertex_attribs = {
+        VkVertexInputAttributeDescription{
+            .location = 0,
+            .binding = 0,
+            .format = VK_FORMAT_R32G32B32_SFLOAT,
+            .offset = offsetof(VectorVertex, position)},
+        VkVertexInputAttributeDescription{
+            .location = 1, .binding = 0, .format = VK_FORMAT_R32G32_SFLOAT, .offset = offsetof(VectorVertex, uv)},
+        VkVertexInputAttributeDescription{
+            .location = 2,
+            .binding = 0,
+            .format = VK_FORMAT_R32G32B32A32_SFLOAT,
+            .offset = offsetof(VectorVertex, color)},
+    };
+
+    VkPipelineVertexInputStateCreateInfo vertex_input_desc = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+        .vertexBindingDescriptionCount = 1,
+        .pVertexBindingDescriptions = &vertex_binding,
+        .vertexAttributeDescriptionCount = static_cast<uint32_t>(vertex_attribs.size()),
+        .pVertexAttributeDescriptions = vertex_attribs.data(),
+    };
+
+    VkPipelineInputAssemblyStateCreateInfo input_assembly_desc = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+        .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+    };
+
+    std::array<VkPipelineShaderStageCreateInfo, 2> shader_stage_desc = {
+        VkPipelineShaderStageCreateInfo{
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+            .stage = VK_SHADER_STAGE_VERTEX_BIT,
+            .module = pass->shader_module_,
+            .pName = "vsMain",
+        },
+        VkPipelineShaderStageCreateInfo{
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+            .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+            .module = pass->shader_module_,
+            .pName = "fsMain",
+        },
+    };
+
+    VkPipelineViewportStateCreateInfo viewport_desc = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+        .viewportCount = 1,
+        .scissorCount = 1,
+    };
+
+    std::array<VkDynamicState, 2> dynamic_states = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dynamic_state_desc = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+        .dynamicStateCount = static_cast<uint32_t>(dynamic_states.size()),
+        .pDynamicStates = dynamic_states.data(),
+    };
+
+    VkPipelineDepthStencilStateCreateInfo depth_stencil_desc = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+        .depthTestEnable = VK_FALSE,
+        .depthWriteEnable = VK_FALSE,
+        .depthCompareOp = VK_COMPARE_OP_ALWAYS,
+    };
+
+    const auto swapchain_format = context->swapchainFormat().format;
+    VkPipelineRenderingCreateInfo rendering_desc = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+        .colorAttachmentCount = 1,
+        .pColorAttachmentFormats = &swapchain_format,
+        .depthAttachmentFormat = context->supportedDepthFormat(),
+    };
+
+    VkPipelineColorBlendAttachmentState blend_attachment_desc = {
+        .colorWriteMask = 0xf,
+    };
+
+    VkPipelineColorBlendStateCreateInfo color_blend_desc = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+        .attachmentCount = 1,
+        .pAttachments = &blend_attachment_desc,
+    };
+
+    VkPipelineRasterizationStateCreateInfo rasterization_desc = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+        .lineWidth = 1.0f,
+    };
+
+    VkPipelineMultisampleStateCreateInfo multisample_desc = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+        .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+    };
+
+    VkGraphicsPipelineCreateInfo pipeline_desc = {
+        .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+        .pNext = &rendering_desc,
+        .stageCount = static_cast<uint32_t>(shader_stage_desc.size()),
+        .pStages = shader_stage_desc.data(),
+        .pVertexInputState = &vertex_input_desc,
+        .pInputAssemblyState = &input_assembly_desc,
+        .pViewportState = &viewport_desc,
+        .pRasterizationState = &rasterization_desc,
+        .pMultisampleState = &multisample_desc,
+        .pDepthStencilState = &depth_stencil_desc,
+        .pColorBlendState = &color_blend_desc,
+        .pDynamicState = &dynamic_state_desc,
+        .layout = pass->pipeline_layout_,
+    };
+
+    VK_CHECK_ERROR(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipeline_desc, nullptr, &pass->pipeline_));
+    return pass;
+}
+
+Renderer::VectorGraphicsPass::~VectorGraphicsPass() noexcept {
+    if (VK_NULL_HANDLE != pipeline_) {
+        vkDestroyPipeline(renderer_->context_->device(), pipeline_, nullptr);
+        pipeline_ = VK_NULL_HANDLE;
+    }
+
+    if (VK_NULL_HANDLE != pipeline_layout_) {
+        vkDestroyPipelineLayout(renderer_->context_->device(), pipeline_layout_, nullptr);
+        pipeline_layout_ = VK_NULL_HANDLE;
+    }
+
+    if (VK_NULL_HANDLE != shader_module_) {
+        vkDestroyShaderModule(renderer_->context_->device(), shader_module_, nullptr);
+        shader_module_ = VK_NULL_HANDLE;
+    }
+}
+
 auto Renderer::frame() -> util::Result {
     if (swapchain_needs_update_) {
         if (!pending_resize_.has_value()) {
@@ -1215,6 +1411,9 @@ auto Renderer::frame() -> util::Result {
     // this frame has definitely ended rendering and all the resources can be garbage collected
     mesh_pool_->garbageCollect(current_frame_);
     texture_pool_->garbageCollect(current_frame_);
+    anim_mesh_pool_->garbageCollect(current_frame_);
+    actor_mesh_pool_->garbageCollect(current_frame_);
+    vector_mesh_pool_->garbageCollect(current_frame_);
 
     // this frame is not executing, so we can touch its descriptor set
     texture_pool_->updateDescriptorSet(current_frame_);
@@ -1328,6 +1527,35 @@ auto Renderer::frame() -> util::Result {
         draw_call.num_indices = mesh_ref->numIndices();
     }
 
+    // vector graphics rendering
+    auto &vector_buffer = current_frame.vector_buffer;
+    auto &vector_buffer_data = vector_buffer->storage();
+
+    const auto fwidth = static_cast<float>(context_->framebufferExtent().width);
+    const auto fheight = static_cast<float>(context_->framebufferExtent().height);
+    const auto iw = 1.0f / fwidth;
+    const auto ih = 1.0f / fheight;
+
+    // clang-format off
+    vector_buffer_data.view_projection = {
+        iw, 0.0f, 0.0f, 0.0f,
+        0.0f, -ih, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        -1.0f, 1.0f, 0.0f, 1.0f
+    };
+
+    for (uint32_t i = 0; i < vector_queue_fill_; ++i) {
+        vector_buffer_data.vector_objects[i].world = vector_queue_[i]->world_matrix;
+        if (vector_queue_[i]->diffuse_map.has_value()) {
+            if (nullptr != texture_pool_->refResource(vector_queue_[i]->diffuse_map.value(), current_frame_)) {
+                vector_buffer_data.vector_objects[i].diffuse_map =
+                    static_cast<uint32_t>(vector_queue_[i]->diffuse_map.value().index());
+            }
+        } else {
+            vector_buffer_data.vector_objects[i].diffuse_map = -1;
+        }
+    }
+
     auto command_buffer = current_frame.command_buffer;
     VK_CHECK_ERROR(vkResetCommandBuffer(command_buffer, 0));
 
@@ -1363,6 +1591,7 @@ auto Renderer::frame() -> util::Result {
 
     // upload buffer data - this also inserts a memory barrier!!
     scene_buffer->upload(command_buffer);
+    vector_buffer->upload(command_buffer);
 
     VkMemoryBarrier2 compute_mem_barrier = {
         .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
@@ -1460,27 +1689,98 @@ auto Renderer::frame() -> util::Result {
     vkCmdSetScissor(command_buffer, 0, 1, &scissor);
     vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, geometry_pass_->pipeline());
 
-    VkDescriptorSet ds = texture_pool_->descriptorSet(current_frame_);
-    vkCmdBindDescriptorSets(
-        command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, geometry_pass_->pipelineLayout(), 0, 1, &ds, 0, nullptr);
+    {
+        VkDescriptorSet ds = texture_pool_->descriptorSet(current_frame_);
+        vkCmdBindDescriptorSets(
+            command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, geometry_pass_->pipelineLayout(), 0, 1, &ds, 0, nullptr);
 
-    VkDeviceSize vertex_offset = 0;
-    OpaqueGeometryPass::cbPushConstantBuffer push_constants;
+        VkDeviceSize vertex_offset = 0;
+        OpaqueGeometryPass::cbPushConstantBuffer push_constants;
 
-    for (uint32_t i = 0; i < num_indexed_draws; ++i) {
-        const auto &draw_call = indexed_draws[i];
+        for (uint32_t i = 0; i < num_indexed_draws; ++i) {
+            const auto &draw_call = indexed_draws[i];
 
-        vkCmdBindVertexBuffers(command_buffer, 0, 1, &draw_call.vertex_buffer, &vertex_offset);
-        vkCmdBindIndexBuffer(command_buffer, draw_call.index_buffer, 0, VK_INDEX_TYPE_UINT32);
+            vkCmdBindVertexBuffers(command_buffer, 0, 1, &draw_call.vertex_buffer, &vertex_offset);
+            vkCmdBindIndexBuffer(command_buffer, draw_call.index_buffer, 0, VK_INDEX_TYPE_UINT32);
 
-        push_constants.frame_heap = scene_buffer->deviceAddress();
-        push_constants.object_id = i;
+            push_constants.frame_heap = scene_buffer->deviceAddress();
+            push_constants.object_id = i;
 
-        vkCmdPushConstants(
-            command_buffer, geometry_pass_->pipelineLayout(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-            0, sizeof(OpaqueGeometryPass::cbPushConstantBuffer), &push_constants);
+            vkCmdPushConstants(
+                command_buffer, geometry_pass_->pipelineLayout(),
+                VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                sizeof(OpaqueGeometryPass::cbPushConstantBuffer), &push_constants);
 
-        vkCmdDrawIndexed(command_buffer, draw_call.num_indices, 1, 0, 0, 0);
+            vkCmdDrawIndexed(command_buffer, draw_call.num_indices, 1, 0, 0, 0);
+        }
+    }
+
+    vkCmdEndRendering(command_buffer);
+
+    // vector graphics rendering
+    VkRenderingAttachmentInfo vector_color_attachment_desc = {
+        .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+        .imageView = context_->swapchainImageViews()[image_index],
+        .imageLayout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
+        .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
+        .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+    };
+
+    VkRenderingAttachmentInfo vector_depth_attachment_desc = {
+        .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+        .imageView = depth_buffer_view_.view(),
+        .imageLayout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
+        .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
+        .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+    };
+
+    VkRenderingInfo vector_rendering_info = {
+        .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+        .renderArea =
+            {
+                .extent = context_->framebufferExtent(),
+            },
+        .layerCount = 1,
+        .colorAttachmentCount = 1,
+        .pColorAttachments = &vector_color_attachment_desc,
+        .pDepthAttachment = &vector_depth_attachment_desc,
+    };
+
+    vkCmdBeginRendering(command_buffer, &vector_rendering_info);
+
+    vkCmdSetViewport(command_buffer, 0, 1, &vp);
+    vkCmdSetScissor(command_buffer, 0, 1, &scissor);
+    vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vector_pass_->pipeline());
+
+    {
+        VkDescriptorSet ds = texture_pool_->descriptorSet(current_frame_);
+        vkCmdBindDescriptorSets(
+            command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vector_pass_->pipelineLayout(), 0, 1, &ds, 0, nullptr);
+
+        VkDeviceSize vertex_offset = 0;
+        VectorGraphicsPass::cbPushConstantBuffer push_constants;
+
+        for (uint32_t i = 0; i < vector_queue_fill_; ++i) {
+            const auto &draw_call = vector_queue_[i];
+            const auto vector_mesh = vector_mesh_pool_->getResource(draw_call->vector_mesh);
+
+            if (!vector_mesh) {
+                continue;
+            }
+
+            vkCmdBindVertexBuffers(command_buffer, 0, 1, vector_mesh->vertexBuffer().addrOf(), &vertex_offset);
+            vkCmdBindIndexBuffer(command_buffer, vector_mesh->indexBuffer().buffer(), 0, VK_INDEX_TYPE_UINT32);
+
+            push_constants.frame_heap = vector_buffer->deviceAddress();
+            push_constants.object_id = i;
+
+            vkCmdPushConstants(
+                command_buffer, vector_pass_->pipelineLayout(),
+                VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                sizeof(VectorGraphicsPass::cbPushConstantBuffer), &push_constants);
+
+            vkCmdDrawIndexed(command_buffer, vector_mesh->numIndices(), 1, 0, 0, 0);
+        }
     }
 
     vkCmdEndRendering(command_buffer);
@@ -1508,6 +1808,7 @@ auto Renderer::frame() -> util::Result {
 
     skinning_queue_fill_ = 0;
     draw_queue_fill_ = 0;
+    vector_queue_fill_ = 0;
 
     VkPipelineStageFlags wait_stages = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     VkSubmitInfo submit_info = {

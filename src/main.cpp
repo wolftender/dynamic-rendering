@@ -12,6 +12,7 @@
 #include "act.hpp"
 #include "assets.hpp"
 #include "model.hpp"
+#include "canvas.hpp"
 
 #define GLFW_FATAL_ERROR(glfw_call_name)                                                                               \
     do {                                                                                                               \
@@ -86,6 +87,7 @@ private:
 
         auto loadSkinningPassShader() const -> std::optional<std::vector<uint32_t>> override;
         auto loadGeometryPassShader() const -> std::optional<std::vector<uint32_t>> override;
+        auto loadVectorPassShader() const -> std::optional<std::vector<uint32_t>> override;
 
     private:
         const asset::ArchiveReader *archive_ = nullptr;
@@ -137,8 +139,9 @@ auto main([[maybe_unused]] int argc, [[maybe_unused]] char **argv) -> int {
 
 ApplicationState::ShaderLoaderImpl::ShaderLoaderImpl(const asset::ArchiveReader *archive) : archive_{archive} {}
 
-auto ApplicationState::ShaderLoaderImpl::loadSkinningPassShader() const -> std::optional<std::vector<uint32_t>> {
-    const auto buffer = archive_->getFileContent("skinning.spv");
+auto inline loadSpvBufferFromFile(const asset::ArchiveReader &archive, std::string_view filename)
+    -> std::optional<std::vector<uint32_t>> {
+    const auto buffer = archive.getFileContent(filename);
     if (!buffer) {
         LogError("failed to load skinning.spv");
         return std::nullopt;
@@ -159,26 +162,16 @@ auto ApplicationState::ShaderLoaderImpl::loadSkinningPassShader() const -> std::
     return spv_buffer;
 }
 
+auto ApplicationState::ShaderLoaderImpl::loadSkinningPassShader() const -> std::optional<std::vector<uint32_t>> {
+    return loadSpvBufferFromFile(*archive_, "skinning.spv");
+}
+
 auto ApplicationState::ShaderLoaderImpl::loadGeometryPassShader() const -> std::optional<std::vector<uint32_t>> {
-    const auto buffer = archive_->getFileContent("shader.spv");
-    if (!buffer) {
-        LogError("failed to load shader.spv");
-        return std::nullopt;
-    }
+    return loadSpvBufferFromFile(*archive_, "shader.spv");
+}
 
-    constexpr auto kWordSize = sizeof(uint32_t);
-    if (buffer->size() % kWordSize != 0) {
-        LogError("invalid alignment of spir-v bytecode");
-        return std::nullopt;
-    }
-
-    const auto size_in_words = buffer->size() / kWordSize;
-    std::vector<uint32_t> spv_buffer;
-
-    spv_buffer.resize(size_in_words);
-    ::memcpy(spv_buffer.data(), buffer->data(), size_in_words * sizeof(uint32_t));
-
-    return spv_buffer;
+auto ApplicationState::ShaderLoaderImpl::loadVectorPassShader() const -> std::optional<std::vector<uint32_t>> {
+    return loadSpvBufferFromFile(*archive_, "vector.spv");
 }
 
 auto ApplicationState::create(const Description &description) -> std::unique_ptr<ApplicationState> {
@@ -356,15 +349,42 @@ auto ApplicationState::run() -> util::Result {
     auto last_frame = Clock::now();
     float simulation_time = 0.0f;
 
-    const std::array<glm::fvec3, 7> kCubePositions = {
-        glm::fvec3{2.0f, 0.0f, 0.0f}, glm::fvec3{0.0f, 2.0f, 0.0f}, glm::fvec3{0.0f, 0.0f, 2.0f},
-        glm::fvec3{2.0f, 2.0f, 0.0f}, glm::fvec3{2.0f, 0.0f, 2.0f}, glm::fvec3{0.0f, 2.0f, 2.0f},
-        glm::fvec3{2.0f, 2.0f, 2.0f},
-    };
+    // const std::array<glm::fvec3, 7> kCubePositions = {
+    //     glm::fvec3{2.0f, 0.0f, 0.0f}, glm::fvec3{0.0f, 2.0f, 0.0f}, glm::fvec3{0.0f, 0.0f, 2.0f},
+    //     glm::fvec3{2.0f, 2.0f, 0.0f}, glm::fvec3{2.0f, 0.0f, 2.0f}, glm::fvec3{0.0f, 2.0f, 2.0f},
+    //     glm::fvec3{2.0f, 2.0f, 2.0f},
+    // };
 
     const auto animations = test_model_->makeAnimationList();
     auto controller = test_model_->createController(animations[4]);
     auto bind_pose = test_model_->createPose();
+
+    graphics::Canvas::Description canvas_desc = {
+        .renderer = renderer_.get(),
+    };
+
+    auto canvas = graphics::Canvas::create(canvas_desc);
+    auto path = graphics::Canvas::Path(
+        glm::fvec4{0.95f, 0.52f, 0.12f, 1.0f}, 30.0f, graphics::Canvas::LineCap::eRound,
+        graphics::Canvas::LineJoint::eRound);
+
+    path.appendVertex({100.0f, 100.0f});
+    path.appendVertex({500.0f, 200.0f});
+    path.appendVertex({700.0f, 100.0f});
+    path.appendVertex({800.0f, 500.0f});
+    path.appendVertex({1000.0f, 300.0f});
+    path.appendVertex({900.0f, 80.0f});
+    path.appendVertex({1100.0f, 200.0f});
+    path.appendBezier({1300.0f, 400.0f}, {1300.0f, 600.0f}, {1000.0f, 700.0f});
+    path.appendVertex({650.0f, 680.0f});
+    path.appendVertex({700.0f, 400.0f});
+    path.appendVertex({500.0f, 400.0f});
+    path.appendVertex({650.0f, 600.0f});
+    path.appendVertex({450.0f, 700.0f});
+    path.closeContour();
+
+    path.createFill(*canvas);
+    path.createStroke(*canvas);
 
     while (!glfwWindowShouldClose(window_handle_)) {
         const auto now = Clock::now();
@@ -410,6 +430,8 @@ auto ApplicationState::run() -> util::Result {
 
         test_model_->render(
             *renderer_.get(), controller.pose(), glm::scale(glm::fmat4x4{1.0f}, glm::fvec3{3.5f, 3.5f, 3.5f}));
+
+        canvas->draw();
 
         if (util::Result::eSuccess != renderer_->frame()) {
             LogError("failed to render frame");

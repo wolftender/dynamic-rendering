@@ -41,8 +41,6 @@ struct VertexShaderInput {
     float4 tangent;
 };
 
-Sampler2D u_textures[];
-
 struct VertexShaderOutput {
     float4 position : SV_Position;
     float3 normal;
