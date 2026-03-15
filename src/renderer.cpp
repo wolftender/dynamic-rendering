@@ -1533,8 +1533,8 @@ auto Renderer::frame() -> util::Result {
 
     const auto fwidth = static_cast<float>(context_->framebufferExtent().width);
     const auto fheight = static_cast<float>(context_->framebufferExtent().height);
-    const auto iw = 1.0f / fwidth;
-    const auto ih = 1.0f / fheight;
+    const auto iw = 2.0f / fwidth;
+    const auto ih = 2.0f / fheight;
 
     // clang-format off
     vector_buffer_data.view_projection = {

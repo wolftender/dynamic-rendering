@@ -105,7 +105,7 @@ auto Canvas::Path::appendBezier(const glm::fvec2 &c1, const glm::fvec2 &c2, cons
 }
 
 auto Canvas::Path::appendArc(const glm::fvec2 &center, float theta) -> void {
-    const auto &vs = vertices_.back();
+    const auto vs = vertices_.back();
     const auto sp = vs.position;
     const auto v1 = sp - center;
     const auto R = glm::length(v1);
@@ -119,8 +119,8 @@ auto Canvas::Path::appendArc(const glm::fvec2 &center, float theta) -> void {
         const auto s = sinf(ang);
 
         const auto v = glm::fvec2{
-            v1.x * c - v1.y * s,
-            v1.x * s + v1.y * c,
+            center.x + v1.x * c - v1.y * s,
+            center.y + v1.x * s + v1.y * c,
         };
 
         float t = static_cast<float>(segments) / static_cast<float>(i);
@@ -466,10 +466,7 @@ auto Canvas::Path::createFillMesh() const -> Mesh {
         const auto &p1 = v1.position;
         const auto &p2 = v2.position;
 
-        LogInfo("checking [{}, {}] [{}, {}] [{}, {}]", p0.x, p0.y, p1.x, p1.y, p2.x, p2.y);
-
         if (!geometry::isConvex(p0, p1, p2)) {
-            LogInfo("triangle {} {} {} is not convex", i0, i1, i2);
             iter = iter->next;
             continue;
         }
@@ -488,14 +485,12 @@ auto Canvas::Path::createFillMesh() const -> Mesh {
         }
 
         if (!is_ear) {
-            LogInfo("triangle {} {} {} is not an ear", i0, i1, i2);
             iter = iter->next;
             continue;
         }
 
         ear_tries = 0;
 
-        LogInfo("add triangle {} {} {}", i0, i1, i2);
         mesh.appendTriangle(i0, i1, i2);
         iter = iter->erase();
         remaining_vertices--;

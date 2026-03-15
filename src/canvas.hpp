@@ -121,6 +121,10 @@ public:
             if (iter_list_ == &slot) {
                 iter_list_ = slot.next;
             }
+
+            if (iter_list_back_ == &slot) {
+                iter_list_back_ = slot.prev;
+            }
         }
 
         auto allocSlot() -> Slot & {
@@ -134,13 +138,14 @@ public:
             slot->next = nullptr;
             slot->object = {};
 
-            slot->prev = iter_list_;
             if (iter_list_) {
-                iter_list_->prev = slot;
+                slot->prev = iter_list_back_;
+                iter_list_back_->next = slot;
+                iter_list_back_ = slot;
+            } else {
+                iter_list_ = slot;
+                iter_list_back_ = slot;
             }
-
-            slot->next = iter_list_;
-            iter_list_ = slot;
 
             return *slot;
         }
@@ -148,6 +153,8 @@ public:
         auto reset() -> void {
             iter_list_ = nullptr;
             free_list_ = &pool_.front();
+            iter_list_back_ = nullptr;
+
             const auto capacity = pool_.size();
 
             for (size_t i = 0; i < capacity - 1; ++i) {
@@ -166,6 +173,7 @@ public:
         std::vector<Slot> pool_;
         Slot *free_list_;
         Slot *iter_list_;
+        Slot *iter_list_back_;
     };
 
     class Object final {

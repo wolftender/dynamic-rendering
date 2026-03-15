@@ -386,6 +386,13 @@ auto ApplicationState::run() -> util::Result {
     path.createFill(*canvas);
     path.createStroke(*canvas);
 
+    path.clearContour();
+    path.setWidth(10.0f);
+    path.setColor(glm::fvec4{1.0f, 0.0f, 0.0f, 1.0f});
+    path.appendVertex({300.0f, 300.0f});
+    path.appendArc({500.0f, 500.0f}, 3.0f);
+    path.createStroke(*canvas);
+
     while (!glfwWindowShouldClose(window_handle_)) {
         const auto now = Clock::now();
         const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(now - last_frame).count();
