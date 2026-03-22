@@ -18,6 +18,8 @@ set(GAME_SOURCE_FILE_LIST
 add_slang_shader(${GAME_SRC_DIR}/shaders/shader.slang)
 add_slang_shader(${GAME_SRC_DIR}/shaders/skinning.slang)
 add_slang_shader(${GAME_SRC_DIR}/shaders/vector.slang)
+add_slang_shader(${GAME_SRC_DIR}/shaders/lighting.slang)
+add_slang_shader(${GAME_SRC_DIR}/shaders/hud.slang)
 add_asset_compressed(${ASSET_DIR}/wakamo.act)
 add_packed_assets(${CMAKE_CURRENT_BINARY_DIR}/assets.arc)
 

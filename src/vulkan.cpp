@@ -443,8 +443,9 @@ auto getCompatibleDevices(VkInstance instance, VkSurfaceKHR surface)
         };
 
         vkGetPhysicalDeviceFeatures2(physical_device, &device_features);
-        if (!device_features_12.timelineSemaphore || !device_features_12.bufferDeviceAddress ||
-            !device_features_12.descriptorIndexing || !device_features_12.descriptorBindingVariableDescriptorCount ||
+        if (!device_features_11.shaderDrawParameters || !device_features_12.timelineSemaphore ||
+            !device_features_12.bufferDeviceAddress || !device_features_12.descriptorIndexing ||
+            !device_features_12.descriptorBindingVariableDescriptorCount ||
             !device_features_12.runtimeDescriptorArray || !device_features_13.synchronization2 ||
             !device_features_13.dynamicRendering) {
             LogWarning(
@@ -539,6 +540,79 @@ auto getCompatibleDevices(VkInstance instance, VkSurfaceKHR surface)
     return compatible_devices;
 }
 
+auto Context::getMaxSampleCount() const -> VkSampleCountFlagBits {
+    VkSampleCountFlags flags =
+        phys_dev_props_.limits.framebufferColorSampleCounts & phys_dev_props_.limits.framebufferDepthSampleCounts;
+
+    if (flags & VK_SAMPLE_COUNT_64_BIT) {
+        return VK_SAMPLE_COUNT_64_BIT;
+    }
+
+    if (flags & VK_SAMPLE_COUNT_32_BIT) {
+        return VK_SAMPLE_COUNT_32_BIT;
+    }
+
+    if (flags & VK_SAMPLE_COUNT_16_BIT) {
+        return VK_SAMPLE_COUNT_16_BIT;
+    }
+
+    if (flags & VK_SAMPLE_COUNT_8_BIT) {
+        return VK_SAMPLE_COUNT_8_BIT;
+    }
+
+    if (flags & VK_SAMPLE_COUNT_4_BIT) {
+        return VK_SAMPLE_COUNT_4_BIT;
+    }
+
+    if (flags & VK_SAMPLE_COUNT_2_BIT) {
+        return VK_SAMPLE_COUNT_2_BIT;
+    }
+
+    return VK_SAMPLE_COUNT_1_BIT;
+}
+
+auto Context::chooseBestSampleCount(uint32_t samples) const -> VkSampleCountFlagBits {
+    VkSampleCountFlags flags =
+        phys_dev_props_.limits.framebufferColorSampleCounts & phys_dev_props_.limits.framebufferDepthSampleCounts;
+
+    std::array<std::pair<uint32_t, VkSampleCountFlagBits>, 10> sample_counts;
+    uint32_t num_sample_counts = 0;
+
+    if (flags & VK_SAMPLE_COUNT_64_BIT) {
+        sample_counts[num_sample_counts++] = {64, VK_SAMPLE_COUNT_64_BIT};
+    }
+
+    if (flags & VK_SAMPLE_COUNT_32_BIT) {
+        sample_counts[num_sample_counts++] = {32, VK_SAMPLE_COUNT_32_BIT};
+    }
+
+    if (flags & VK_SAMPLE_COUNT_16_BIT) {
+        sample_counts[num_sample_counts++] = {16, VK_SAMPLE_COUNT_16_BIT};
+    }
+
+    if (flags & VK_SAMPLE_COUNT_8_BIT) {
+        sample_counts[num_sample_counts++] = {8, VK_SAMPLE_COUNT_8_BIT};
+    }
+
+    if (flags & VK_SAMPLE_COUNT_4_BIT) {
+        sample_counts[num_sample_counts++] = {4, VK_SAMPLE_COUNT_4_BIT};
+    }
+
+    if (flags & VK_SAMPLE_COUNT_2_BIT) {
+        sample_counts[num_sample_counts++] = {2, VK_SAMPLE_COUNT_2_BIT};
+    }
+
+    sample_counts[num_sample_counts++] = {1, VK_SAMPLE_COUNT_1_BIT};
+
+    return std::min_element(
+               sample_counts.begin(), sample_counts.begin() + num_sample_counts, [&](const auto &a, const auto &b) {
+        const auto da = abs(static_cast<int32_t>(samples) - static_cast<int32_t>(a.first));
+        const auto db = abs(static_cast<int32_t>(samples) - static_cast<int32_t>(b.first));
+
+        return da < db;
+    })->second;
+}
+
 auto Context::create(VkInstance instance, const Description &description) -> std::unique_ptr<Context> {
     std::unique_ptr<Context> context{new (std::nothrow) Context()};
     if (!context) {
@@ -594,6 +668,7 @@ auto Context::create(VkInstance instance, const Description &description) -> std
     VkPhysicalDeviceVulkan11Features device_features_11 = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
         .pNext = nullptr,
+        .shaderDrawParameters = true,
     };
 
     VkPhysicalDeviceVulkan12Features device_features_12 = {

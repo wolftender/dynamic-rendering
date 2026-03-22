@@ -88,6 +88,8 @@ private:
         auto loadSkinningPassShader() const -> std::optional<std::vector<uint32_t>> override;
         auto loadGeometryPassShader() const -> std::optional<std::vector<uint32_t>> override;
         auto loadVectorPassShader() const -> std::optional<std::vector<uint32_t>> override;
+        auto loadLightingPassShader() const -> std::optional<std::vector<uint32_t>> override;
+        auto loadInterfacePassShader() const -> std::optional<std::vector<uint32_t>> override;
 
     private:
         const asset::ArchiveReader *archive_ = nullptr;
@@ -172,6 +174,14 @@ auto ApplicationState::ShaderLoaderImpl::loadGeometryPassShader() const -> std::
 
 auto ApplicationState::ShaderLoaderImpl::loadVectorPassShader() const -> std::optional<std::vector<uint32_t>> {
     return loadSpvBufferFromFile(*archive_, "vector.spv");
+}
+
+auto ApplicationState::ShaderLoaderImpl::loadLightingPassShader() const -> std::optional<std::vector<uint32_t>> {
+    return loadSpvBufferFromFile(*archive_, "lighting.spv");
+}
+
+auto ApplicationState::ShaderLoaderImpl::loadInterfacePassShader() const -> std::optional<std::vector<uint32_t>> {
+    return loadSpvBufferFromFile(*archive_, "hud.spv");
 }
 
 auto ApplicationState::create(const Description &description) -> std::unique_ptr<ApplicationState> {

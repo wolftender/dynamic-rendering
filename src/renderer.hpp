@@ -183,6 +183,7 @@ public:
     static constexpr uint32_t kNumAnimMeshPoolSize = 128;
     static constexpr uint32_t kVertexBufferAlign = 64;
     static constexpr uint32_t kNumMaxVectorMeshes = 1024;
+    static constexpr uint32_t kNumSamplesForMSAA = 4;
 
     struct cbFrameHeapBuffer {
         struct cbPointLightData {
@@ -308,6 +309,8 @@ public:
         virtual auto loadSkinningPassShader() const -> std::optional<std::vector<uint32_t>> = 0;
         virtual auto loadGeometryPassShader() const -> std::optional<std::vector<uint32_t>> = 0;
         virtual auto loadVectorPassShader() const -> std::optional<std::vector<uint32_t>> = 0;
+        virtual auto loadLightingPassShader() const -> std::optional<std::vector<uint32_t>> = 0;
+        virtual auto loadInterfacePassShader() const -> std::optional<std::vector<uint32_t>> = 0;
 
         IShaderLoader(const IShaderLoader &) = delete;
         auto operator=(const IShaderLoader &) = delete;
@@ -509,6 +512,9 @@ public:
             uint32_t height;
             MagFilter mag_filter;
             MinFilter min_filter;
+            bool is_target;
+            uint32_t samples;
+            VkFormat format;
         };
 
         Texture(const Texture &) = delete;
@@ -525,6 +531,7 @@ public:
         auto sampler() const -> VkSampler { return sampler_; }
 
     private:
+        static auto create(Renderer *renderer, const Description &desc) -> std::optional<Texture>;
         static auto fromRgba(Renderer *renderer, const Description &desc, std::span<const uint8_t> rgba_data)
             -> std::optional<Texture>;
 
@@ -896,6 +903,47 @@ private:
         VkPipeline pipeline_ = VK_NULL_HANDLE;
     };
 
+    class FullscreenPass final {
+    public:
+        static auto create(Renderer *renderer, uint32_t push_constant_size, std::span<const uint32_t> shader_bytecode)
+            -> std::unique_ptr<FullscreenPass>;
+
+        ~FullscreenPass() noexcept;
+
+        FullscreenPass(const FullscreenPass &) = delete;
+        auto operator=(const FullscreenPass &) = delete;
+
+        FullscreenPass(FullscreenPass &&) noexcept = delete;
+        auto operator=(FullscreenPass &&) noexcept = delete;
+
+        auto shaderModule() const -> VkShaderModule { return shader_module_; }
+        auto pipelineLayout() const -> VkPipelineLayout { return pipeline_layout_; }
+        auto pipeline() const -> VkPipeline { return pipeline_; }
+
+    private:
+        FullscreenPass() = default;
+
+        Renderer *renderer_ = nullptr;
+
+        VkShaderModule shader_module_ = VK_NULL_HANDLE;
+        VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
+        VkPipeline pipeline_ = VK_NULL_HANDLE;
+    };
+
+    struct cbUserInterfacePassConstants {
+        uint32_t texture;
+        uint32_t reserved0;
+        uint32_t reserved1;
+        uint32_t reserved2;
+    };
+
+    struct cbLightingPassConstants {
+        uint32_t texture;
+        uint32_t reserved0;
+        uint32_t reserved1;
+        uint32_t reserved2;
+    };
+
     struct FrameData {
         std::unique_ptr<TypedBufferHelper<cbFrameHeapBuffer>> scene_buffer;
         std::unique_ptr<TypedBufferHelper<cbVectorHeapBuffer>> vector_buffer;
@@ -903,6 +951,10 @@ private:
 
         VkFence fence = VK_NULL_HANDLE;
         VkSemaphore present_semaphore = VK_NULL_HANDLE;
+
+        std::optional<TextureId> geometry_target;
+        std::optional<TextureId> vector_target_msaa;
+        std::optional<TextureId> vector_target;
     };
 
     auto addMesh(Mesh &&mesh) -> std::optional<MeshId>;
@@ -918,6 +970,7 @@ private:
     auto unrefVectorMesh(const VectorMeshId &id) -> void;
 
     auto createSwapchainData() -> void;
+    auto createRenderTargets() -> void;
     auto getCurrentFrame() -> FrameData & { return frames_[current_frame_]; }
 
     Renderer() = default;
@@ -955,6 +1008,8 @@ private:
     std::unique_ptr<ComputeSkinningPass> skinning_pass_ = nullptr;
     std::unique_ptr<OpaqueGeometryPass> geometry_pass_ = nullptr;
     std::unique_ptr<VectorGraphicsPass> vector_pass_ = nullptr;
+    std::unique_ptr<FullscreenPass> lighting_pass_ = nullptr;
+    std::unique_ptr<FullscreenPass> interface_pass_ = nullptr;
 
     // draw queue
     std::array<std::optional<SkinnedDrawDescription>, kNumMaxSkinnedObjects> skinning_queue_;

@@ -212,6 +212,8 @@ public:
     auto swapchainImages() const -> const std::vector<VkImage> & { return swapchain_images_; }
     auto swapchainImageViews() const -> const std::vector<VkImageView> & { return swapchain_image_views_; }
     auto supportedDepthFormat() const -> VkFormat { return supported_depth_format_; }
+    auto getMaxSampleCount() const -> VkSampleCountFlagBits;
+    auto chooseBestSampleCount(uint32_t samples) const -> VkSampleCountFlagBits;
 
 private:
     static auto create(VkInstance instance, const Description &description) -> std::unique_ptr<Context>;

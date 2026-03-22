@@ -697,8 +697,7 @@ auto Renderer::Texture::operator=(Texture &&t) noexcept -> Texture & {
     return *this;
 }
 
-auto Renderer::Texture::fromRgba(Renderer *renderer, const Description &desc, std::span<const uint8_t> rgba_data)
-    -> std::optional<Texture> {
+auto Renderer::Texture::create(Renderer *renderer, const Description &desc) -> std::optional<Texture> {
     Texture texture;
 
     texture.renderer_ = renderer;
@@ -729,10 +728,84 @@ auto Renderer::Texture::fromRgba(Renderer *renderer, const Description &desc, st
         return std::nullopt;
     }
 
+    VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT;
+    if (desc.is_target) {
+        usage = usage | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    }
+
+    VkImageCreateInfo create_info = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .imageType = VK_IMAGE_TYPE_2D,
+        .format = desc.format,
+        .extent = {desc.width, desc.height, 1},
+        .mipLevels = 1,
+        .arrayLayers = 1,
+        .samples = texture.renderer_->context_->chooseBestSampleCount(desc.samples),
+        .tiling = VK_IMAGE_TILING_OPTIMAL,
+        .usage = usage,
+    };
+
+    texture.image_ = texture.renderer_->context_->memory().createImage(create_info);
+    texture.image_view_ =
+        texture.image().createView(VK_IMAGE_VIEW_TYPE_2D, texture.image().format(), VK_IMAGE_ASPECT_COLOR_BIT);
+
+    texture.description_.format = texture.image_.format();
+
+    VkSamplerCreateInfo sampler_desc = {
+        .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+        .magFilter = mag_filter,
+        .minFilter = min_filter,
+        .mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
+        .anisotropyEnable = VK_TRUE,
+        .maxAnisotropy = 8.0f,
+        .maxLod = 1,
+    };
+
+    VK_CHECK_ERROR(vkCreateSampler(texture.renderer_->context_->device(), &sampler_desc, nullptr, &texture.sampler_));
+    return std::move(texture);
+}
+
+auto Renderer::Texture::fromRgba(Renderer *renderer, const Description &desc, std::span<const uint8_t> rgba_data)
+    -> std::optional<Texture> {
+    Texture texture;
+
+    texture.renderer_ = renderer;
+    texture.description_ = desc;
+
+    texture.description_.samples = 1;
+    texture.description_.is_target = false;
+
+    VkFilter min_filter, mag_filter;
+    switch (desc.min_filter) {
+    case MinFilter::eLinear:
+        min_filter = VK_FILTER_LINEAR;
+        break;
+    case MinFilter::eNearest:
+        min_filter = VK_FILTER_NEAREST;
+        break;
+    default:
+        LogError("vulkan: invalid texture min filter");
+        return std::nullopt;
+    }
+
+    switch (desc.mag_filter) {
+    case MagFilter::eLinear:
+        mag_filter = VK_FILTER_LINEAR;
+        break;
+    case MagFilter::eNearest:
+        mag_filter = VK_FILTER_NEAREST;
+        break;
+    default:
+        LogError("vulkan: invalid texture min filter");
+        return std::nullopt;
+    }
+
     texture.image_ = texture.renderer_->context_->memory().createImageRgba(
         VK_IMAGE_USAGE_SAMPLED_BIT, {desc.width, desc.height}, rgba_data);
     texture.image_view_ =
         texture.image().createView(VK_IMAGE_VIEW_TYPE_2D, texture.image().format(), VK_IMAGE_ASPECT_COLOR_BIT);
+
+    texture.description_.format = texture.image_.format();
 
     VkSamplerCreateInfo sampler_desc = {
         .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
@@ -794,6 +867,7 @@ auto Renderer::create(const Description &description) -> std::unique_ptr<Rendere
     renderer->actor_mesh_pool_ = std::make_unique<ResourcePool<ActorMesh, ActorMeshTag, kNumMaxSkinnedObjects>>();
     renderer->vector_mesh_pool_ = std::make_unique<ResourcePool<Mesh, VectorMeshTag, kNumMaxVectorMeshes>>();
     renderer->createSwapchainData();
+    renderer->createRenderTargets();
 
     for (size_t i = 0; i < kNumFramesInFlight; ++i) {
         renderer->frames_[i].scene_buffer = TypedBufferHelper<cbFrameHeapBuffer>::create(renderer.get());
@@ -857,6 +931,32 @@ auto Renderer::create(const Description &description) -> std::unique_ptr<Rendere
     renderer->vector_pass_ = VectorGraphicsPass::create(renderer.get(), description.shader_loader.get());
     if (!renderer->vector_pass_) {
         LogError("vulkan: renderer cannot initialize vector graphics pipeline");
+        return nullptr;
+    }
+
+    const auto lighting_pass_shader = description.shader_loader->loadLightingPassShader();
+    if (!lighting_pass_shader.has_value()) {
+        LogError("vulkan: renderer cannot load lighting pass shader");
+        return nullptr;
+    }
+
+    const auto interface_pass_shader = description.shader_loader->loadInterfacePassShader();
+    if (!interface_pass_shader.has_value()) {
+        LogError("vulkan: renderer cannot load interface pass shader");
+        return nullptr;
+    }
+
+    renderer->lighting_pass_ = FullscreenPass::create(
+        renderer.get(), static_cast<uint32_t>(sizeof(cbLightingPassConstants)), lighting_pass_shader.value());
+    if (!renderer->lighting_pass_) {
+        LogError("vulkan: renderer cannot load lighting pass");
+        return nullptr;
+    }
+
+    renderer->interface_pass_ = FullscreenPass::create(
+        renderer.get(), static_cast<uint32_t>(sizeof(cbUserInterfacePassConstants)), interface_pass_shader.value());
+    if (!renderer->interface_pass_) {
+        LogError("vulkan: renderer cannot load interface pass");
         return nullptr;
     }
 
@@ -941,6 +1041,58 @@ auto Renderer::createSwapchainData() -> void {
     for (size_t i = 0; i < num_swapchain_images; ++i) {
         VK_CHECK_ERROR(
             vkCreateSemaphore(context_->device(), &semaphore_desc, nullptr, &swapchain_data_[i].render_semaphore));
+    }
+}
+
+auto Renderer::createRenderTargets() -> void {
+    const auto surface_extent = context_->surfaceExtent();
+
+    Texture::Description msaa_target_desc = {
+        .width = surface_extent.width,
+        .height = surface_extent.height,
+        .mag_filter = Texture::MagFilter::eLinear,
+        .min_filter = Texture::MinFilter::eLinear,
+        .is_target = true,
+        .samples = kNumSamplesForMSAA,
+        .format = VK_FORMAT_R8G8B8A8_SRGB,
+    };
+
+    auto vector_target_msaa = Texture::create(this, msaa_target_desc);
+
+    Texture::Description color_target_desc = {
+        .width = surface_extent.width,
+        .height = surface_extent.height,
+        .mag_filter = Texture::MagFilter::eLinear,
+        .min_filter = Texture::MinFilter::eLinear,
+        .is_target = true,
+        .samples = 1,
+        .format = VK_FORMAT_R8G8B8A8_SRGB,
+    };
+
+    for (uint32_t i = 0; i < kNumFramesInFlight; ++i) {
+        if (frames_[i].geometry_target.has_value()) {
+            unrefTexture(frames_[i].geometry_target.value());
+        }
+
+        if (frames_[i].vector_target.has_value()) {
+            unrefTexture(frames_[i].vector_target.value());
+        }
+
+        if (frames_[i].vector_target_msaa.has_value()) {
+            unrefTexture(frames_[i].vector_target_msaa.value());
+        }
+
+        if (auto geometry_target = Texture::create(this, color_target_desc)) {
+            frames_[i].geometry_target = addTexture(std::move(geometry_target.value()));
+        }
+
+        if (auto vector_target = Texture::create(this, color_target_desc)) {
+            frames_[i].vector_target = addTexture(std::move(vector_target.value()));
+        }
+
+        if (auto vector_target_msaa = Texture::create(this, msaa_target_desc)) {
+            frames_[i].vector_target_msaa = addTexture(std::move(vector_target_msaa.value()));
+        }
     }
 }
 
@@ -1140,11 +1292,11 @@ auto Renderer::OpaqueGeometryPass::create(Renderer *renderer, const IShaderLoade
         .depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL,
     };
 
-    const auto swapchain_format = context->swapchainFormat().format;
+    const auto output_format = VK_FORMAT_R8G8B8A8_SRGB;
     VkPipelineRenderingCreateInfo rendering_desc = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
         .colorAttachmentCount = 1,
-        .pColorAttachmentFormats = &swapchain_format,
+        .pColorAttachmentFormats = &output_format,
         .depthAttachmentFormat = context->supportedDepthFormat(),
     };
 
@@ -1319,11 +1471,11 @@ auto Renderer::VectorGraphicsPass::create(Renderer *renderer, const IShaderLoade
         .depthCompareOp = VK_COMPARE_OP_ALWAYS,
     };
 
-    const auto swapchain_format = context->swapchainFormat().format;
+    const auto output_format = VK_FORMAT_R8G8B8A8_SRGB;
     VkPipelineRenderingCreateInfo rendering_desc = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
         .colorAttachmentCount = 1,
-        .pColorAttachmentFormats = &swapchain_format,
+        .pColorAttachmentFormats = &output_format,
         .depthAttachmentFormat = context->supportedDepthFormat(),
     };
 
@@ -1344,7 +1496,7 @@ auto Renderer::VectorGraphicsPass::create(Renderer *renderer, const IShaderLoade
 
     VkPipelineMultisampleStateCreateInfo multisample_desc = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-        .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+        .rasterizationSamples = renderer->context_->chooseBestSampleCount(kNumSamplesForMSAA),
     };
 
     VkGraphicsPipelineCreateInfo pipeline_desc = {
@@ -1384,6 +1536,169 @@ Renderer::VectorGraphicsPass::~VectorGraphicsPass() noexcept {
     }
 }
 
+auto Renderer::FullscreenPass::create(
+    Renderer *renderer, uint32_t push_constant_size, std::span<const uint32_t> shader_bytecode)
+    -> std::unique_ptr<FullscreenPass> {
+    std::unique_ptr<FullscreenPass> pass{new (std::nothrow) FullscreenPass()};
+    if (!pass) {
+        LogError("vulkan: renderer cannot allocate opaque geometry pass resources");
+        return nullptr;
+    }
+
+    pass->renderer_ = renderer;
+
+    const auto context = pass->renderer_->context_;
+    const auto device = pass->renderer_->context_->device();
+
+    VkShaderModuleCreateInfo shader_module_info = {
+        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+        .codeSize = shader_bytecode.size() * sizeof(uint32_t),
+        .pCode = shader_bytecode.data(),
+    };
+
+    VK_CHECK_ERROR(vkCreateShaderModule(device, &shader_module_info, nullptr, &pass->shader_module_));
+
+    // graphics pipeline
+    VkPushConstantRange push_constant_range = {
+        .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+        .size = push_constant_size,
+    };
+
+    VkDescriptorSetLayout descriptor_layout = pass->renderer_->texture_pool_->descriptorSetLayout();
+
+    VkPipelineLayoutCreateInfo pipeline_layout_desc = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        .setLayoutCount = 1,
+        .pSetLayouts = &descriptor_layout,
+        .pushConstantRangeCount = 1,
+        .pPushConstantRanges = &push_constant_range,
+    };
+
+    VK_CHECK_ERROR(vkCreatePipelineLayout(device, &pipeline_layout_desc, nullptr, &pass->pipeline_layout_));
+
+    VkPipelineVertexInputStateCreateInfo vertex_input_desc = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+        .vertexBindingDescriptionCount = 0,
+        .pVertexBindingDescriptions = nullptr,
+        .vertexAttributeDescriptionCount = 0,
+        .pVertexAttributeDescriptions = nullptr,
+    };
+
+    VkPipelineInputAssemblyStateCreateInfo input_assembly_desc = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+        .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+    };
+
+    std::array<VkPipelineShaderStageCreateInfo, 2> shader_stage_desc = {
+        VkPipelineShaderStageCreateInfo{
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+            .stage = VK_SHADER_STAGE_VERTEX_BIT,
+            .module = pass->shader_module_,
+            .pName = "vsMain",
+        },
+        VkPipelineShaderStageCreateInfo{
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+            .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+            .module = pass->shader_module_,
+            .pName = "fsMain",
+        },
+    };
+
+    VkPipelineViewportStateCreateInfo viewport_desc = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+        .viewportCount = 1,
+        .scissorCount = 1,
+    };
+
+    std::array<VkDynamicState, 2> dynamic_states = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dynamic_state_desc = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+        .dynamicStateCount = static_cast<uint32_t>(dynamic_states.size()),
+        .pDynamicStates = dynamic_states.data(),
+    };
+
+    VkPipelineDepthStencilStateCreateInfo depth_stencil_desc = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+        .depthTestEnable = VK_FALSE,
+        .depthWriteEnable = VK_FALSE,
+        .depthCompareOp = VK_COMPARE_OP_ALWAYS,
+    };
+
+    const auto output_format = pass->renderer_->context_->swapchainFormat().format;
+    VkPipelineRenderingCreateInfo rendering_desc = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+        .colorAttachmentCount = 1,
+        .pColorAttachmentFormats = &output_format,
+        .depthAttachmentFormat = context->supportedDepthFormat(),
+    };
+
+    VkPipelineColorBlendAttachmentState blend_attachment_desc = {
+        .blendEnable = true,
+        .srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA,
+        .dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+        .colorBlendOp = VK_BLEND_OP_ADD,
+        .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
+        .dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO,
+        .alphaBlendOp = VK_BLEND_OP_ADD,
+        .colorWriteMask =
+            VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+    };
+
+    VkPipelineColorBlendStateCreateInfo color_blend_desc = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+        .attachmentCount = 1,
+        .pAttachments = &blend_attachment_desc,
+    };
+
+    VkPipelineRasterizationStateCreateInfo rasterization_desc = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+        .cullMode = VK_CULL_MODE_FRONT_BIT,
+        .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
+        .lineWidth = 1.0f,
+    };
+
+    VkPipelineMultisampleStateCreateInfo multisample_desc = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+        .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+    };
+
+    VkGraphicsPipelineCreateInfo pipeline_desc = {
+        .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+        .pNext = &rendering_desc,
+        .stageCount = static_cast<uint32_t>(shader_stage_desc.size()),
+        .pStages = shader_stage_desc.data(),
+        .pVertexInputState = &vertex_input_desc,
+        .pInputAssemblyState = &input_assembly_desc,
+        .pViewportState = &viewport_desc,
+        .pRasterizationState = &rasterization_desc,
+        .pMultisampleState = &multisample_desc,
+        .pDepthStencilState = &depth_stencil_desc,
+        .pColorBlendState = &color_blend_desc,
+        .pDynamicState = &dynamic_state_desc,
+        .layout = pass->pipeline_layout_,
+    };
+
+    VK_CHECK_ERROR(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipeline_desc, nullptr, &pass->pipeline_));
+    return pass;
+}
+
+Renderer::FullscreenPass::~FullscreenPass() noexcept {
+    if (VK_NULL_HANDLE != pipeline_) {
+        vkDestroyPipeline(renderer_->context_->device(), pipeline_, nullptr);
+        pipeline_ = VK_NULL_HANDLE;
+    }
+
+    if (VK_NULL_HANDLE != pipeline_layout_) {
+        vkDestroyPipelineLayout(renderer_->context_->device(), pipeline_layout_, nullptr);
+        pipeline_layout_ = VK_NULL_HANDLE;
+    }
+
+    if (VK_NULL_HANDLE != shader_module_) {
+        vkDestroyShaderModule(renderer_->context_->device(), shader_module_, nullptr);
+        shader_module_ = VK_NULL_HANDLE;
+    }
+}
+
 auto Renderer::frame() -> util::Result {
     if (swapchain_needs_update_) {
         if (!pending_resize_.has_value()) {
@@ -1394,6 +1709,7 @@ auto Renderer::frame() -> util::Result {
 
         context_->resize(pending_resize_->surface_extent, pending_resize_->framebuffer_extent);
         createSwapchainData();
+        createRenderTargets();
 
         swapchain_needs_update_ = false;
         pending_resize_.reset();
@@ -1601,18 +1917,20 @@ auto Renderer::frame() -> util::Result {
         .dstAccessMask = VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT,
     };
 
-    std::array<VkImageMemoryBarrier2, 2> output_barriers = {
-        VkImageMemoryBarrier2{
-            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-            .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-            .srcAccessMask = 0,
-            .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-            .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-            .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-            .newLayout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
-            .image = context_->swapchainImages()[image_index],
-            .subresourceRange = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .levelCount = 1, .layerCount = 1},
-        },
+    const auto *rc_geometry_target = texture_pool_->refResource(current_frame.geometry_target.value(), current_frame_);
+    const auto *rc_vector_target = texture_pool_->refResource(current_frame.vector_target.value(), current_frame_);
+    const auto *rc_vector_target_msaa = texture_pool_->refResource(current_frame.vector_target_msaa.value(), current_frame_);
+
+    VkImage geometry_target_image = rc_geometry_target->image().image();
+    VkImage vector_target_image = rc_vector_target->image().image();
+    VkImage vector_target_msaa_image = rc_vector_target_msaa->image().image();
+    
+    VkImageView geometry_target_view = rc_geometry_target->imageView().view();
+    VkImageView vector_target_view = rc_vector_target->imageView().view();
+    VkImageView vector_target_msaa_view = rc_vector_target_msaa->imageView().view();
+
+    std::array<VkImageMemoryBarrier2, 4> output_barriers = {
+        // depth buffer
         VkImageMemoryBarrier2{
             .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
             .srcStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
@@ -1629,6 +1947,45 @@ auto Renderer::frame() -> util::Result {
                     .layerCount = 1,
                 },
         },
+
+        // geometry buffer
+        VkImageMemoryBarrier2{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            .srcAccessMask = 0,
+            .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            .newLayout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
+            .image = geometry_target_image,
+            .subresourceRange = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .levelCount = 1, .layerCount = 1},
+        },
+
+        // vector graphics buffer
+        VkImageMemoryBarrier2{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            .srcAccessMask = 0,
+            .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            .newLayout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
+            .image = vector_target_image,
+            .subresourceRange = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .levelCount = 1, .layerCount = 1},
+        },
+
+        // vector graphics buffer msaa
+        VkImageMemoryBarrier2{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            .srcAccessMask = 0,
+            .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            .newLayout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
+            .image = vector_target_msaa_image,
+            .subresourceRange = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .levelCount = 1, .layerCount = 1},
+        },
     };
 
     VkDependencyInfo render_dependency_desc = {
@@ -1643,7 +2000,7 @@ auto Renderer::frame() -> util::Result {
 
     VkRenderingAttachmentInfo color_attachment_desc = {
         .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-        .imageView = context_->swapchainImageViews()[image_index],
+        .imageView = geometry_target_view,
         .imageLayout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
         .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
         .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
@@ -1720,18 +2077,14 @@ auto Renderer::frame() -> util::Result {
     // vector graphics rendering
     VkRenderingAttachmentInfo vector_color_attachment_desc = {
         .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-        .imageView = context_->swapchainImageViews()[image_index],
-        .imageLayout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
-        .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
+        .imageView = vector_target_msaa_view,
+        .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT,
+        .resolveImageView = vector_target_view,
+        .resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
         .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-    };
-
-    VkRenderingAttachmentInfo vector_depth_attachment_desc = {
-        .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-        .imageView = depth_buffer_view_.view(),
-        .imageLayout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
-        .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
-        .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        .clearValue = {.color = {{0.0f, 0.0f, 0.0f, 0.0f}}},
     };
 
     VkRenderingInfo vector_rendering_info = {
@@ -1743,7 +2096,7 @@ auto Renderer::frame() -> util::Result {
         .layerCount = 1,
         .colorAttachmentCount = 1,
         .pColorAttachments = &vector_color_attachment_desc,
-        .pDepthAttachment = &vector_depth_attachment_desc,
+        .pDepthAttachment = nullptr,
     };
 
     vkCmdBeginRendering(command_buffer, &vector_rendering_info);
@@ -1781,6 +2134,128 @@ auto Renderer::frame() -> util::Result {
 
             vkCmdDrawIndexed(command_buffer, vector_mesh->numIndices(), 1, 0, 0, 0);
         }
+    }
+
+    vkCmdEndRendering(command_buffer);
+
+    // barriers before final compositing pass
+    std::array<VkImageMemoryBarrier2, 3> compositing_barriers = {
+        VkImageMemoryBarrier2{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            .srcAccessMask = 0,
+            .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            .newLayout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
+            .image = context_->swapchainImages()[image_index],
+            .subresourceRange = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .levelCount = 1, .layerCount = 1},
+        },
+
+        // geometry buffer
+        VkImageMemoryBarrier2{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            .srcAccessMask = 0,
+            .dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
+            .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            .image = geometry_target_image,
+            .subresourceRange = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .levelCount = 1, .layerCount = 1},
+        },
+
+        // vector graphics buffer
+        VkImageMemoryBarrier2{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .srcStageMask = VK_PIPELINE_STAGE_2_RESOLVE_BIT,
+            .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            .dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
+            .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            .image = vector_target_image,
+            .subresourceRange = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .levelCount = 1, .layerCount = 1},
+        },
+    };
+
+    VkDependencyInfo composite_dependency_desc = {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .imageMemoryBarrierCount = static_cast<uint32_t>(compositing_barriers.size()),
+        .pImageMemoryBarriers = compositing_barriers.data(),
+    };
+
+    vkCmdPipelineBarrier2(command_buffer, &composite_dependency_desc);
+
+    // composite vector graphics and geometry buffers
+    // vector graphics rendering
+    VkRenderingAttachmentInfo swap_chain_rendering_attachment = {
+        .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+        .imageView = context_->swapchainImageViews()[image_index],
+        .imageLayout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
+        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+        .clearValue = {.color = {{0.0f, 0.0f, 0.0f, 1.0f}}},
+    };
+
+    VkRenderingInfo compositing_rendering_info = {
+        .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+        .renderArea =
+            {
+                .extent = context_->framebufferExtent(),
+            },
+        .layerCount = 1,
+        .colorAttachmentCount = 1,
+        .pColorAttachments = &swap_chain_rendering_attachment,
+        .pDepthAttachment = nullptr,
+    };
+
+    vkCmdBeginRendering(command_buffer, &compositing_rendering_info);
+
+    VkViewport vp_fullscreen = {
+        .x = 0.0f,
+        .y = 0.0f,
+        .width = static_cast<float>(context_->surfaceExtent().width),
+        .height = static_cast<float>(context_->surfaceExtent().height),
+        .minDepth = 0.0f,
+        .maxDepth = 1.0f,
+    };
+
+    vkCmdSetViewport(command_buffer, 0, 1, &vp_fullscreen);
+    vkCmdSetScissor(command_buffer, 0, 1, &scissor);
+
+    {
+        vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, lighting_pass_->pipeline());
+        VkDescriptorSet ds = texture_pool_->descriptorSet(current_frame_);
+        vkCmdBindDescriptorSets(
+            command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, lighting_pass_->pipelineLayout(), 0, 1, &ds, 0, nullptr);
+
+        cbLightingPassConstants push_constants;
+        push_constants.texture = current_frame.geometry_target->index();
+
+        vkCmdPushConstants(
+                command_buffer, lighting_pass_->pipelineLayout(),
+                VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                sizeof(cbLightingPassConstants), &push_constants);
+
+        vkCmdDraw(command_buffer, 3, 1, 0, 0);
+    }
+
+    {
+        vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, interface_pass_->pipeline());
+        VkDescriptorSet ds = texture_pool_->descriptorSet(current_frame_);
+        vkCmdBindDescriptorSets(
+            command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, interface_pass_->pipelineLayout(), 0, 1, &ds, 0, nullptr);
+
+        cbUserInterfacePassConstants push_constants;
+        push_constants.texture = current_frame.vector_target->index();
+
+        vkCmdPushConstants(
+                command_buffer, interface_pass_->pipelineLayout(),
+                VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                sizeof(cbUserInterfacePassConstants), &push_constants);
+        
+        vkCmdDraw(command_buffer, 3, 1, 0, 0);
     }
 
     vkCmdEndRendering(command_buffer);
