@@ -6,11 +6,12 @@
 #include <GLFW/glfw3.h>
 
 #include "logger.hpp"
-#include "util.hpp"
 #include "act.hpp"
 #include "assets.hpp"
 #include "model.hpp"
 #include "canvas.hpp"
+
+#include "common/utility.hpp"
 
 #include "graphics/common.hpp"
 #include "graphics/vulkan.hpp"

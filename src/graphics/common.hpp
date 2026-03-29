@@ -3,7 +3,9 @@
 #include <vulkan/vk_enum_string_helper.h>
 #include <vk_mem_alloc.h>
 
-#include "util.hpp"
+// this include is needed for error reporting
+#include "common/utility.hpp" // IWYU pragma: keep
+
 #include "logger.hpp"
 
 #define VK_CHECK_ERROR(vk_call)                                                                                        \

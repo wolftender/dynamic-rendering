@@ -2,6 +2,9 @@
 #include "common.hpp"
 #include "logger.hpp"
 
+#include "common/byteutils.hpp"
+#include "common/circularqueue.hpp"
+
 #include <vulkan/vulkan.h>
 #include <volk.h>
 #include <vk_mem_alloc.h>
@@ -328,8 +331,8 @@ private:
     };
 
     std::array<Slot, kPoolSize> storage_;
-    util::FixedSizeQueue<uint32_t, kPoolSize> free_ids_;
-    std::array<util::FixedSizeQueue<uint32_t, kPoolSize>, kNumFramesInFlight> deletion_queues_;
+    util::CircularBufferQueue<uint32_t, kPoolSize> free_ids_;
+    std::array<util::CircularBufferQueue<uint32_t, kPoolSize>, kNumFramesInFlight> deletion_queues_;
 };
 
 class Renderer::BindlessTexturePool final {

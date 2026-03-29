@@ -1,42 +1,8 @@
-﻿#include <array>
+#include <array>
 
-#include <fmt/format.h>
-#include <lz4.h>
+#include "byteutils.hpp"
 
-#ifdef _WIN32
-#include <Windows.h>
-#endif
-
-#include "util.hpp"
-
-namespace util {
-
-/// BinaryReader
-namespace bytes {
-
-auto BinaryReader::remaining() const -> u64 { return data_span_.size() - ptr_; }
-
-auto BinaryReader::seek(u64 location) -> Result {
-    if (location > data_span_.size()) {
-        return Result::eFailure;
-    }
-
-    ptr_ = location;
-    return Result::eSuccess;
-}
-
-auto BinaryReader::readBuffer(u64 num_bytes) -> std::optional<std::span<const u8>> {
-    const auto end_ptr = data_span_.size();
-
-    if (ptr_ + num_bytes > end_ptr) {
-        return std::nullopt;
-    }
-
-    const auto data_ptr = data_span_.data() + ptr_;
-    ptr_ += num_bytes;
-
-    return std::span<const u8>{data_ptr, num_bytes};
-}
+namespace util::bytes {
 
 // https://wiki.osdev.org/CRC32
 constexpr std::array<u32, 256> kCrc32Table = {
@@ -68,7 +34,8 @@ constexpr std::array<u32, 256> kCrc32Table = {
     0xD70DD2EE, 0x4E048354, 0x3903B3C2, 0xA7672661, 0xD06016F7, 0x4969474D, 0x3E6E77DB, 0xAED16A4A, 0xD9D65ADC,
     0x40DF0B66, 0x37D83BF0, 0xA9BCAE53, 0xDEBB9EC5, 0x47B2CF7F, 0x30B5FFE9, 0xBDBDF21C, 0xCABAC28A, 0x53B39330,
     0x24B4A3A6, 0xBAD03605, 0xCDD70693, 0x54DE5729, 0x23D967BF, 0xB3667A2E, 0xC4614AB8, 0x5D681B02, 0x2A6F2B94,
-    0xB40BBE37, 0xC30C8EA1, 0x5A05DF1B, 0x2D02EF8D};
+    0xB40BBE37, 0xC30C8EA1, 0x5A05DF1B, 0x2D02EF8D,
+};
 
 auto bufferCrc32(std::span<const u8> data) -> u32 {
     u32 crc = 0xffffffff;
@@ -79,46 +46,4 @@ auto bufferCrc32(std::span<const u8> data) -> u32 {
     return (crc ^ 0xffffffff);
 }
 
-} // namespace bytes
-
-#ifdef _WIN32
-// windows users most likely don't like stderr, as with subsystem:windows they
-// will not see it and it makes debugging a chore on users pc
-auto reportFatalError(std::string_view error_message) -> void {
-    std::wstring wstr_msg;
-    auto result =
-        ::MultiByteToWideChar(CP_UTF8, 0, error_message.data(), static_cast<int>(error_message.size()), nullptr, 0);
-
-    if (result <= 0) {
-        goto fatal_conversion_error;
-    }
-
-    // why +10? this is how its done on msdn, im not sure why
-    // https://learn.microsoft.com/en-us/windows/win32/api/stringapiset/nf-stringapiset-multibytetowidechar
-    wstr_msg.resize(result + 10);
-    result = ::MultiByteToWideChar(
-        CP_UTF8, 0, error_message.data(), static_cast<int>(error_message.size()), wstr_msg.data(),
-        static_cast<int>(wstr_msg.size()));
-
-    if (result <= 0) {
-        goto fatal_conversion_error;
-    }
-
-    MessageBoxW(NULL, wstr_msg.data(), L"fatal error", MB_OK | MB_ICONERROR);
-    return;
-
-fatal_conversion_error:
-    MessageBoxW(
-        NULL,
-        L"fatal error has occured when converting the error message from "
-        L"utf-8, this is probably a memory "
-        L"corruption",
-        L"fatal error", MB_OK | MB_ICONERROR);
-}
-#else
-// for unix users stderr is natural place for fatal error to be reported, so
-// just let it be printed there
-void reportFatalError(std::string_view error_message) { fmt::println(stderr, "fatal error: {}", error_message); }
-#endif
-
-} // namespace util
+} // namespace util::bytes

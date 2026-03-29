@@ -1,6 +1,8 @@
 #include "act.hpp"
 #include "logger.hpp"
 
+#include "common/binaryreader.hpp"
+
 #include <glm/gtc/type_ptr.hpp>
 
 namespace act {

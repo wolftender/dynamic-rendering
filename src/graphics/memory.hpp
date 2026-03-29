@@ -1,4 +1,6 @@
 #pragma once
+#include <span>
+
 #include "vulkan.hpp"
 
 namespace graphics {

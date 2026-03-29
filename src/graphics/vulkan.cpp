@@ -3,7 +3,6 @@
 #include "common.hpp"
 #include "vulkan.hpp"
 #include "logger.hpp"
-#include "util.hpp"
 
 #include <vulkan/vulkan.h>
 #include <volk.h>

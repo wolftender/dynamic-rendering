@@ -1,8 +1,13 @@
 #pragma once
 #include <array>
+#include <memory>
+#include <optional>
+#include <vector>
 
 #include "vulkan.hpp"
 #include "camera.hpp"
+
+#include "common/utility.hpp"
 
 #undef near
 #undef far

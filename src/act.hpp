@@ -7,7 +7,7 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 
-#include "util.hpp"
+#include "common/byteutils.hpp"
 
 namespace act {
 
