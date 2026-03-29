@@ -1,109 +1,13 @@
 #pragma once
 #include <array>
 
-#include <glm/gtc/constants.hpp>
-#include <glm/gtc/matrix_transform.hpp>
-#include <glm/ext/matrix_clip_space.hpp>
-
 #include "vulkan.hpp"
+#include "camera.hpp"
 
 #undef near
 #undef far
 
 namespace graphics {
-
-class Camera final {
-public:
-    Camera()
-        : position_{0.0f, 0.0f, 1.0f}, target_{0.0f, 0.0f, 0.0f}, aspect_{1.0f}, fov_{glm::pi<float>() * 0.5f},
-          near_{0.5f}, far_{200.0f}, dirty_bit_proj_{true}, dirty_bit_view_{true}, projection_{1.0f},
-          projection_inv_{1.0f}, view_{1.0f}, view_inv_{1.0f} {}
-
-    auto position() const -> const glm::fvec3 & { return position_; }
-    auto target() const -> const glm::fvec3 & { return target_; }
-    auto aspect() const -> float { return aspect_; }
-    auto fov() const -> float { return fov_; }
-    auto near() const -> float { return near_; }
-    auto far() const -> float { return far_; }
-
-    auto setPosition(const glm::fvec3 &position) -> void {
-        position_ = position;
-        dirty_bit_view_ = true;
-    }
-
-    auto setTarget(const glm::fvec3 &target) -> void {
-        target_ = target;
-        dirty_bit_view_ = true;
-    }
-
-    auto setAspect(float aspect) -> void {
-        aspect_ = aspect;
-        dirty_bit_proj_ = true;
-    }
-
-    auto setFov(float fov) -> void {
-        fov_ = fov;
-        dirty_bit_proj_ = true;
-    }
-
-    auto setNear(float near) -> void {
-        near_ = near;
-        dirty_bit_proj_ = true;
-    }
-
-    auto setFar(float far) -> void {
-        far_ = far;
-        dirty_bit_proj_ = true;
-    }
-
-    auto projection() const -> const glm::fmat4x4 & {
-        calculateProjection();
-        return projection_;
-    }
-
-    auto view() const -> const glm::fmat4x4 & {
-        calculateView();
-        return view_;
-    }
-
-    auto projectionInv() const -> const glm::fmat4x4 & {
-        calculateProjection();
-        return projection_inv_;
-    }
-
-    auto viewInv() const -> const glm::fmat4x4 & {
-        calculateView();
-        return view_inv_;
-    }
-
-private:
-    inline auto calculateProjection() const -> void {
-        if (dirty_bit_proj_) {
-            projection_ = glm::perspective(fov_, aspect_, near_, far_);
-            projection_inv_ = glm::inverse(projection_);
-            dirty_bit_proj_ = false;
-        }
-    }
-
-    inline auto calculateView() const -> void {
-        if (dirty_bit_view_) {
-            view_ = glm::lookAt(position_, target_, glm::fvec3{0.0f, 1.0f, 0.0f});
-            view_inv_ = glm::inverse(view_);
-            dirty_bit_view_ = false;
-        }
-    }
-
-    glm::fvec3 position_;
-    glm::fvec3 target_;
-
-    float aspect_, fov_, near_, far_;
-
-    // cache
-    mutable bool dirty_bit_proj_;
-    mutable bool dirty_bit_view_;
-    mutable glm::fmat4x4 projection_, projection_inv_;
-    mutable glm::fmat4x4 view_, view_inv_;
-};
 
 class Renderer final {
 private:

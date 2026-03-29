@@ -1,4 +1,5 @@
 #include "renderer.hpp"
+#include "common.hpp"
 #include "logger.hpp"
 
 #include <vulkan/vulkan.h>

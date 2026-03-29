@@ -10,6 +10,9 @@ set(GAME_SOURCE_FILE_LIST
     ${GAME_SRC_DIR}/assets.cpp
     ${GAME_SRC_DIR}/model.cpp
     ${GAME_SRC_DIR}/canvas.cpp
+    ${GAME_SRC_DIR}/graphics/common.cpp
+    ${GAME_SRC_DIR}/graphics/camera.cpp
+    ${GAME_SRC_DIR}/graphics/memory.cpp
     ${GAME_SRC_DIR}/graphics/vulkan.cpp
     ${GAME_SRC_DIR}/graphics/renderer.cpp
 )

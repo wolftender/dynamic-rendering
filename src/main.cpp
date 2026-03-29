@@ -12,6 +12,7 @@
 #include "model.hpp"
 #include "canvas.hpp"
 
+#include "graphics/common.hpp"
 #include "graphics/vulkan.hpp"
 #include "graphics/renderer.hpp"
 
