@@ -8,6 +8,7 @@
 #include "camera.hpp"
 
 #include "common/utility.hpp"
+#include "common/fixedqueue.hpp"
 
 #undef near
 #undef far
@@ -687,32 +688,13 @@ public:
 
     auto frame() -> util::Result;
 
-    auto drawOpaqueMesh(OpaqueDrawDescription &&desc) -> util::Result {
-        if (draw_queue_fill_ == draw_queue_.size()) {
-            return util::Result::eFailure;
-        }
-
-        draw_queue_[draw_queue_fill_++] = std::move(desc);
-        return util::Result::eSuccess;
-    }
+    auto drawOpaqueMesh(OpaqueDrawDescription &&desc) -> util::Result { return draw_queue_.push(std::move(desc)); }
 
     auto drawSkinnedMesh(SkinnedDrawDescription &&desc) -> util::Result {
-        if (skinning_queue_fill_ == skinning_queue_.size()) {
-            return util::Result::eFailure;
-        }
-
-        skinning_queue_[skinning_queue_fill_++] = std::move(desc);
-        return util::Result::eSuccess;
+        return skinning_queue_.push(std::move(desc));
     }
 
-    auto drawVectorMesh(VectorDrawDescription &&desc) -> util::Result {
-        if (vector_queue_fill_ == vector_queue_.size()) {
-            return util::Result::eFailure;
-        }
-
-        vector_queue_[vector_queue_fill_++] = std::move(desc);
-        return util::Result::eSuccess;
-    }
+    auto drawVectorMesh(VectorDrawDescription &&desc) -> util::Result { return vector_queue_.push(std::move(desc)); }
 
 private:
     class ComputeSkinningPass final {
@@ -921,12 +903,9 @@ private:
     std::unique_ptr<FullscreenPass> interface_pass_ = nullptr;
 
     // draw queue
-    std::array<std::optional<SkinnedDrawDescription>, kNumMaxSkinnedObjects> skinning_queue_;
-    std::array<std::optional<OpaqueDrawDescription>, kNumMaxStaticObjects> draw_queue_;
-    std::array<std::optional<VectorDrawDescription>, kNumMaxVectorMeshes> vector_queue_;
-    uint32_t skinning_queue_fill_ = 0;
-    uint32_t draw_queue_fill_ = 0;
-    uint32_t vector_queue_fill_ = 0;
+    util::FixedSizeQueue<SkinnedDrawDescription, kNumMaxSkinnedObjects> skinning_queue_;
+    util::FixedSizeQueue<OpaqueDrawDescription, kNumMaxStaticObjects> draw_queue_;
+    util::FixedSizeQueue<VectorDrawDescription, kNumMaxVectorMeshes> vector_queue_;
 
     uint32_t current_frame_ = 0;
 };

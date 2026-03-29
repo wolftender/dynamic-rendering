@@ -1776,7 +1776,8 @@ auto Renderer::frame() -> util::Result {
     scene_buffer_data.view = camera_.view();
     scene_buffer_data.view_inv = camera_.viewInv();
 
-    for (uint32_t i = 0; i < draw_queue_fill_ && num_indexed_draws < kNumMaxStaticObjects; ++i, ++num_indexed_draws) {
+    for (uint32_t i = 0; i < draw_queue_.getFill() && num_indexed_draws < kNumMaxStaticObjects;
+         ++i, ++num_indexed_draws) {
         const auto object_id = num_indexed_draws;
         scene_buffer_data.static_objects[object_id].world = draw_queue_[i]->world_matrix;
 
@@ -1807,7 +1808,7 @@ auto Renderer::frame() -> util::Result {
     }
 
     // upload all queued compute skinning bone buffers
-    for (uint32_t i = 0; i < skinning_queue_fill_ && num_indexed_draws < kNumMaxStaticObjects;
+    for (uint32_t i = 0; i < skinning_queue_.getFill() && num_indexed_draws < kNumMaxStaticObjects;
          ++i, ++num_indexed_draws) {
         const auto object_id = num_indexed_draws;
         scene_buffer_data.static_objects[object_id].world = skinning_queue_[i]->world_matrix;
@@ -1864,7 +1865,7 @@ auto Renderer::frame() -> util::Result {
         -1.0f, 1.0f, 0.0f, 1.0f
     };
 
-    for (uint32_t i = 0; i < vector_queue_fill_; ++i) {
+    for (uint32_t i = 0; i < vector_queue_.getFill(); ++i) {
         vector_buffer_data.vector_objects[i].world = vector_queue_[i]->world_matrix;
         if (vector_queue_[i]->diffuse_map.has_value()) {
             if (nullptr != texture_pool_->refResource(vector_queue_[i]->diffuse_map.value(), current_frame_)) {
@@ -1891,7 +1892,7 @@ auto Renderer::frame() -> util::Result {
 
     ComputeSkinningPass::cbPushConstantBuffer skinning_constants;
 
-    for (uint32_t i = 0; i < skinning_queue_fill_; ++i) {
+    for (uint32_t i = 0; i < skinning_queue_.getFill(); ++i) {
         const auto actor_id = skinning_queue_[i]->skinned_mesh;
         auto *actor = actor_mesh_pool_->getResource(actor_id);
         auto *input_mesh = anim_mesh_pool_->getResource(actor->inputMesh());
@@ -2117,7 +2118,7 @@ auto Renderer::frame() -> util::Result {
         VkDeviceSize vertex_offset = 0;
         VectorGraphicsPass::cbPushConstantBuffer push_constants;
 
-        for (uint32_t i = 0; i < vector_queue_fill_; ++i) {
+        for (uint32_t i = 0; i < vector_queue_.getFill(); ++i) {
             const auto &draw_call = vector_queue_[i];
             const auto vector_mesh = vector_mesh_pool_->getResource(draw_call->vector_mesh);
 
@@ -2285,9 +2286,9 @@ auto Renderer::frame() -> util::Result {
     vkCmdPipelineBarrier2(command_buffer, &dependency_present);
     vkEndCommandBuffer(command_buffer);
 
-    skinning_queue_fill_ = 0;
-    draw_queue_fill_ = 0;
-    vector_queue_fill_ = 0;
+    skinning_queue_.clear();
+    vector_queue_.clear();
+    draw_queue_.clear();
 
     VkPipelineStageFlags wait_stages = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     VkSubmitInfo submit_info = {
