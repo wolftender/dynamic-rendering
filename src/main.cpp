@@ -7,12 +7,13 @@
 
 #include "logger.hpp"
 #include "util.hpp"
-#include "vulkan.hpp"
-#include "renderer.hpp"
 #include "act.hpp"
 #include "assets.hpp"
 #include "model.hpp"
 #include "canvas.hpp"
+
+#include "graphics/vulkan.hpp"
+#include "graphics/renderer.hpp"
 
 #define GLFW_FATAL_ERROR(glfw_call_name)                                                                               \
     do {                                                                                                               \

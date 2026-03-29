@@ -7,11 +7,11 @@ set(GAME_SOURCE_FILE_LIST
     ${GAME_SRC_DIR}/main.cpp
     ${GAME_SRC_DIR}/util.cpp
     ${GAME_SRC_DIR}/act.cpp
-    ${GAME_SRC_DIR}/vulkan.cpp
-    ${GAME_SRC_DIR}/renderer.cpp
     ${GAME_SRC_DIR}/assets.cpp
     ${GAME_SRC_DIR}/model.cpp
     ${GAME_SRC_DIR}/canvas.cpp
+    ${GAME_SRC_DIR}/graphics/vulkan.cpp
+    ${GAME_SRC_DIR}/graphics/renderer.cpp
 )
 
 # compresset assets
