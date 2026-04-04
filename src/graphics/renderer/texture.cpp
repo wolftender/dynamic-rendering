@@ -2,7 +2,6 @@
 
 #include "graphics/common.hpp"
 #include "graphics/renderer/texture.hpp"
-#include "graphics/renderer/scheduler.hpp"
 
 namespace graphics {
 
@@ -67,12 +66,6 @@ inline auto textureTypeToViewTypeVk(RendererTexture::TextureType type) -> VkImag
     }
 }
 
-inline auto formatToVk(Format format) -> VkFormat {
-    return std::find_if(kVulkanFormatMap.begin(), kVulkanFormatMap.end(), [&](const auto &p1) {
-        return p1.first == format;
-    })->second;
-}
-
 inline auto usageToVk(const RendererTexture::Usage &usage) -> VkImageUsageFlags {
     using Usage = RendererTexture::Usage;
     VkImageUsageFlags native_usage = static_cast<VkImageUsageFlagBits>(0);
@@ -101,11 +94,11 @@ inline auto usageToVk(const RendererTexture::Usage &usage) -> VkImageUsageFlags 
 }
 
 RendererTexture::RendererTexture(
-    RendererScheduler *scheduler, Image &&image, Image::View &&view, VkSampler sampler, Description description)
-    : RendererResource{scheduler}, context_{scheduler->context()}, image_{std::move(image)}, view_{std::move(view)},
-      sampler_{sampler}, description_{std::move(description)} {}
+    IResourceScheduler *scheduler, Image &&image, Image::View &&view, VkSampler sampler, Description description)
+    : RendererResource{scheduler}, image_{std::move(image)}, view_{std::move(view)}, sampler_{sampler},
+      description_{std::move(description)} {}
 
-auto RendererTexture::create(RendererScheduler *scheduler, const Description &description)
+auto RendererTexture::create(IResourceScheduler *scheduler, const Description &description)
     -> util::RefCountedPtr<RendererTexture> {
     const auto type = textureTypeToImageTypeVk(description.type);
     const auto view_type = textureTypeToViewTypeVk(description.type);
@@ -149,7 +142,7 @@ auto RendererTexture::create(RendererScheduler *scheduler, const Description &de
     return texture;
 }
 
-auto RendererTexture::createFromRgba(RendererScheduler *scheduler, const RgbaDescription &desc)
+auto RendererTexture::createFromRgba(IResourceScheduler *scheduler, const RgbaDescription &desc)
     -> util::RefCountedPtr<RendererTexture> {
     Description description = {
         .type = TextureType::eTexture2D,
@@ -194,7 +187,7 @@ auto RendererTexture::createFromRgba(RendererScheduler *scheduler, const RgbaDes
 
 RendererTexture::~RendererTexture() noexcept {
     if (VK_NULL_HANDLE != sampler_) {
-        vkDestroySampler(context_->device(), sampler_, nullptr);
+        vkDestroySampler(scheduler()->context()->device(), sampler_, nullptr);
         sampler_ = VK_NULL_HANDLE;
     }
 }

@@ -2,112 +2,95 @@
 #include <array>
 #include <vector>
 
+#include "common/refcounted.hpp"
+
 #include "graphics/common.hpp"
 #include "graphics/renderer/resource.hpp"
-#include "graphics/renderer/scheduler.hpp"
 
 namespace graphics {
 
-template <uint32_t kNumSets> class DescriptorSetArray final : public RendererResource {
+enum class DescriptorDataType {
+    eShaderStorageBuffer,
+    eUniformBuffer,
+    eSamplerTexture,
+};
+
+enum class DescriptorShaderStage : VkShaderStageFlags {
+    eVertex = VK_SHADER_STAGE_VERTEX_BIT,
+    eTessControl = VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT,
+    eTessEvaluation = VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT,
+    eGeometry = VK_SHADER_STAGE_GEOMETRY_BIT,
+    eFragment = VK_SHADER_STAGE_FRAGMENT_BIT,
+    eCompute = VK_SHADER_STAGE_COMPUTE_BIT,
+    eAllGraphics = VK_SHADER_STAGE_ALL_GRAPHICS,
+    eAll = VK_SHADER_STAGE_ALL,
+};
+
+auto operator|(const DescriptorShaderStage &s1, const DescriptorShaderStage &s2) -> DescriptorShaderStage;
+auto operator&(const DescriptorShaderStage &s1, const DescriptorShaderStage &s2) -> DescriptorShaderStage;
+auto operator~(const DescriptorShaderStage &s) -> DescriptorShaderStage;
+
+struct DescriptorDescription {
+    DescriptorDataType type;
+    DescriptorShaderStage stages;
+    uint32_t num_bindings;
+};
+
+class DescriptorLayout final : RendererResource {
 public:
-    enum class DescriptorDataType {
-        eShaderStorageBuffer,
-        eUniformBuffer,
-        eSamplerTexture,
-    };
-
-    struct DescriptorDescription {
-        DescriptorDataType type;
-        VkShaderStageFlags stages;
-        uint32_t num_bindings;
-    };
-
     struct Description {
         std::vector<DescriptorDescription> layout;
     };
 
-    static auto create(RendererScheduler *scheduler, const Description &description)
+    static auto create(IResourceScheduler *scheduler, const Description &description)
+        -> util::RefCountedPtr<DescriptorLayout>;
+
+    ~DescriptorLayout() noexcept;
+
+    DescriptorLayout(const DescriptorLayout &) = delete;
+    auto operator=(const DescriptorLayout &) = delete;
+
+    DescriptorLayout(DescriptorLayout &&) = delete;
+    auto operator=(DescriptorLayout &&) = delete;
+
+    auto description() const -> const Description & { return description_; }
+    auto nativeLayout() const -> VkDescriptorSetLayout { return layout_; }
+
+    auto numSamplerTextures() const -> uint32_t { return num_sampler_textures_; }
+    auto numStorageBuffers() const -> uint32_t { return num_storage_buffers_; }
+    auto numUniformBuffers() const -> uint32_t { return num_uniform_buffers_; }
+    auto variableDescMaxCount() const -> uint32_t { return variable_desc_max_count_; }
+
+private:
+    DescriptorLayout(IResourceScheduler *scheduler, VkDescriptorSetLayout layout, const Description &description)
+        : RendererResource{scheduler}, layout_{layout}, description_{description} {}
+
+    VkDescriptorSetLayout layout_ = VK_NULL_HANDLE;
+    Description description_;
+
+    uint32_t num_sampler_textures_ = 0;
+    uint32_t num_storage_buffers_ = 0;
+    uint32_t num_uniform_buffers_ = 0;
+    uint32_t variable_desc_max_count_ = 0;
+};
+
+template <uint32_t kNumSets> class DescriptorSetArray final : public RendererResource {
+public:
+    static auto create(IResourceScheduler *scheduler, const DescriptorLayout::Description &description)
         -> util::RefCountedPtr<DescriptorSetArray> {
-        util::RefCountedPtr<DescriptorSetArray> helper{new (std::nothrow) DescriptorSetArray()};
-        if (!helper) {
+        util::RefCountedPtr<DescriptorSetArray> array{new (std::nothrow) DescriptorSetArray()};
+        if (!array) {
             LogError("vulkan: cannot allocate descriptor set array");
             return nullptr;
         }
 
-        helper->scheduler_ = scheduler;
-        helper->desc_ = std::move(description);
+        array->scheduler_ = scheduler;
+        array->layout_ = DescriptorLayout::create(scheduler, description);
 
-        uint32_t num_layout_elements = helper->desc_.layout.size();
-
-        std::vector<VkDescriptorSetLayoutBinding> bindings;
-        std::vector<VkDescriptorBindingFlags> binding_flags;
-
-        bindings.resize(num_layout_elements);
-        binding_flags.resize(num_layout_elements);
-
-        uint32_t num_sampler_textures = 0;
-        uint32_t num_storage_buffers = 0;
-        uint32_t num_uniform_buffers = 0;
-        uint32_t variable_desc_max_count = 0;
-
-        for (size_t i = 0; i < num_layout_elements; ++i) {
-            const auto &element = helper->desc_.layout[i];
-            bindings[i].binding = i;
-            bindings[i].descriptorCount = element.num_bindings;
-            bindings[i].stageFlags = static_cast<VkShaderStageFlags>(element.stages);
-
-            switch (element.type) {
-            case DescriptorDataType::eSamplerTexture:
-                bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-                num_sampler_textures += element.num_bindings;
-
-                break;
-            case DescriptorDataType::eShaderStorageBuffer:
-                bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-                num_storage_buffers += element.num_bindings;
-
-                break;
-            case DescriptorDataType::eUniformBuffer:
-                bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-                num_uniform_buffers += element.num_bindings;
-
-                break;
-            default:
-                LogError("vulkan: invalid descriptor data type");
-                return nullptr;
-            }
-
-            if (element.num_bindings == 1) {
-                binding_flags[i] = 0;
-            } else if (element.num_bindings > 1) {
-                binding_flags[i] = VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT;
-                if (variable_desc_max_count > 0) {
-                    LogError("vulkan: invalid descriptor set layout, cant have more than one VLA");
-                    return nullptr;
-                }
-
-                variable_desc_max_count = element.num_bindings;
-            } else {
-                LogError("vulkan: invalid binding count");
-                return nullptr;
-            }
-        }
-
-        VkDescriptorSetLayoutBindingFlagsCreateInfo layout_flags_desc = {
-            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
-            .bindingCount = static_cast<uint32_t>(binding_flags.size()),
-            .pBindingFlags = binding_flags.data(),
-        };
-
-        VkDescriptorSetLayoutCreateInfo layout_desc = {
-            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-            .pNext = &layout_flags_desc,
-            .bindingCount = static_cast<uint32_t>(bindings.size()),
-            .pBindings = bindings.data(),
-        };
-
-        const auto device = helper->renderer_->context_->device();
-        VK_CHECK_ERROR(vkCreateDescriptorSetLayout(device, &layout_desc, nullptr, &helper->layout_));
+        const auto num_sampler_textures = array->layout_->numSamplerTextures();
+        const auto num_storage_buffers = array->layout_->numStorageBuffers();
+        const auto num_uniform_buffers = array->layout_->numUniformBuffers();
+        const auto variable_desc_max_count = array->layout_->variableDescMaxCount();
 
         std::vector<VkDescriptorPoolSize> pool_sizes;
         if (num_sampler_textures > 0) {
@@ -141,7 +124,7 @@ public:
             .pPoolSizes = pool_sizes.data(),
         };
 
-        VK_CHECK_ERROR(vkCreateDescriptorPool(device, &pool_info, nullptr, &helper->pool_));
+        VK_CHECK_ERROR(vkCreateDescriptorPool(scheduler->context()->device(), &pool_info, nullptr, &array->pool_));
 
         // allocate the descriptor sets
         std::array<uint32_t, kNumSets> desc_counts;
@@ -158,28 +141,23 @@ public:
         // https://github.com/KhronosGroup/Vulkan-Docs/issues/1236
         std::array<VkDescriptorSetLayout, kNumSets> layouts;
         for (size_t i = 0; i < kNumSets; ++i) {
-            layouts[i] = helper->layout_;
+            layouts[i] = array->layout_;
         }
 
         VkDescriptorSetAllocateInfo set_alloc_info = {
             .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
             .pNext = (variable_desc_max_count > 0) ? &variable_desc_info : nullptr,
-            .descriptorPool = helper->pool_,
+            .descriptorPool = array->pool_,
             .descriptorSetCount = kNumSets,
             .pSetLayouts = layouts.data(),
         };
 
-        VK_CHECK_ERROR(vkAllocateDescriptorSets(device, &set_alloc_info, helper->sets_.data()));
-        return helper;
+        VK_CHECK_ERROR(vkAllocateDescriptorSets(scheduler->context()->device(), &set_alloc_info, array->sets_.data()));
+        return array;
     }
 
     ~DescriptorSetArray() noexcept {
-        const auto device = scheduler_->context()->device();
-
-        if (VK_NULL_HANDLE != layout_) {
-            vkDestroyDescriptorSetLayout(device, layout_, nullptr);
-            layout_ = VK_NULL_HANDLE;
-        }
+        const auto device = scheduler()->context()->device();
 
         if (VK_NULL_HANDLE != pool_) {
             vkDestroyDescriptorPool(device, pool_, nullptr);
@@ -194,17 +172,16 @@ public:
     auto operator=(DescriptorSetArray &&) noexcept = delete;
 
     auto pool() const -> VkDescriptorPool { return pool_; }
-    auto description() const -> const Description & { return desc_; }
-    auto layout() const -> VkDescriptorSetLayout { return layout_; }
+    auto description() const -> const DescriptorLayout::Description & { return layout_->description(); }
+    auto layout() const -> DescriptorLayout * { return layout_; }
     auto getSetForFrame(uint32_t frame) const -> VkDescriptorSet { return sets_[frame]; }
 
 private:
     DescriptorSetArray() = default;
 
-    RendererScheduler *scheduler_ = nullptr;
-    Description desc_;
+    Context *context_ = nullptr;
 
-    VkDescriptorSetLayout layout_ = VK_NULL_HANDLE;
+    util::RefCountedPtr<DescriptorLayout> layout_ = {};
     VkDescriptorPool pool_ = VK_NULL_HANDLE;
 
     std::array<VkDescriptorSet, kNumSets> sets_;

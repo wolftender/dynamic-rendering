@@ -31,11 +31,12 @@ public:
 
     static auto create(Context *context) -> std::unique_ptr<RendererScheduler>;
 
-    auto context() -> Context * { return context_; }
-    auto context() const -> const Context * { return context_; }
-    auto currentFrameIndex() const -> uint32_t { return current_frame_index_; }
-    auto swapchainOutOfDate() const -> bool { return swapchain_needs_update_; }
+    // IResourceScheduler
+    auto context() -> Context * override { return context_; }
+    auto context() const -> const Context * override { return context_; }
+    auto currentFrameIndex() const -> uint32_t override { return current_frame_index_; }
 
+    auto swapchainOutOfDate() const -> bool { return swapchain_needs_update_; }
     auto resizeSwapchain(const VkExtent2D &surface_extend, const VkExtent2D &framebuffer_extent);
 
     ~RendererScheduler() noexcept;

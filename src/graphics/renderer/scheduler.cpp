@@ -62,6 +62,35 @@ auto RendererScheduler::create(Context *context) -> std::unique_ptr<RendererSche
     return scheduler;
 }
 
-RendererScheduler::~RendererScheduler() noexcept {}
+RendererScheduler::~RendererScheduler() noexcept {
+    LogInfo("vulkan: releasing scheduler resources");
+    VK_CHECK_ERROR(vkDeviceWaitIdle(context_->device()));
+
+    if (VK_NULL_HANDLE != command_pool_) {
+        vkDestroyCommandPool(context_->device(), command_pool_, nullptr);
+        command_pool_ = VK_NULL_HANDLE;
+    }
+
+    for (size_t i = 0; i < kNumFramesInFlight; ++i) {
+        auto &frame = per_frame_data_[i];
+
+        if (VK_NULL_HANDLE != frame.fence) {
+            vkDestroyFence(context_->device(), frame.fence, nullptr);
+            frame.fence = VK_NULL_HANDLE;
+        }
+
+        if (VK_NULL_HANDLE != frame.present_semaphore) {
+            vkDestroySemaphore(context_->device(), frame.present_semaphore, nullptr);
+            frame.present_semaphore = VK_NULL_HANDLE;
+        }
+    }
+
+    for (auto &image_data : per_image_data_) {
+        if (VK_NULL_HANDLE != image_data.render_semaphore) {
+            vkDestroySemaphore(context_->device(), image_data.render_semaphore, nullptr);
+            image_data.render_semaphore = VK_NULL_HANDLE;
+        }
+    }
+}
 
 } // namespace graphics

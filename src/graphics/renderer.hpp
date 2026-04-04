@@ -9,9 +9,7 @@
 
 #include "common/utility.hpp"
 #include "common/fixedqueue.hpp"
-
-#undef near
-#undef far
+#include "common/managedpool.hpp"
 
 namespace graphics {
 
@@ -444,8 +442,6 @@ public:
     auto camera() -> Camera & { return camera_; }
     auto camera() const -> const Camera & { return camera_; }
 
-    auto swapchainNeedsUpdate() const -> bool { return swapchain_needs_update_; }
-
     auto resize(VkExtent2D surface_extent, VkExtent2D framebuffer_extent) {
         if (surface_extent.width == 0 || surface_extent.height == 0 || framebuffer_extent.width == 0 ||
             framebuffer_extent.height == 0) {
@@ -811,10 +807,10 @@ private:
 
     // resource pools
     std::unique_ptr<BindlessTexturePool> texture_pool_;
-    std::unique_ptr<ResourcePool<Mesh, MeshTag, kNumMeshPoolSize>> mesh_pool_;
-    std::unique_ptr<ResourcePool<Mesh, AnimatedMeshTag, kNumAnimMeshPoolSize>> anim_mesh_pool_;
-    std::unique_ptr<ResourcePool<ActorMesh, ActorMeshTag, kNumMaxSkinnedObjects>> actor_mesh_pool_;
-    std::unique_ptr<ResourcePool<Mesh, VectorMeshTag, kNumMaxVectorMeshes>> vector_mesh_pool_;
+    util::ManagedPool<Mesh, kNumMeshPoolSize, MeshTag> mesh_pool_;
+    util::ManagedPool<Mesh, kNumAnimMeshPoolSize, AnimatedMeshTag> anim_mesh_pool_;
+    util::ManagedPool<ActorMesh, kNumMaxSkinnedObjects, ActorMeshTag> actor_mesh_pool_;
+    util::ManagedPool<Mesh, kNumMaxVectorMeshes, VectorMeshTag> vector_mesh_pool_;
 
     // render passes
     std::unique_ptr<ComputeSkinningPass> skinning_pass_ = nullptr;

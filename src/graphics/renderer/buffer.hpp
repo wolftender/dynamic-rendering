@@ -2,9 +2,10 @@
 #include <optional>
 #include <span>
 
+#include "common/refcounted.hpp"
+
 #include "graphics/memory.hpp"
 #include "graphics/renderer/resource.hpp"
-#include "graphics/renderer/scheduler.hpp"
 
 namespace graphics {
 
@@ -33,8 +34,28 @@ public:
         std::optional<std::span<uint8_t>> init_data;
     };
 
-    static auto create(RendererScheduler *scheduler, const Description &description)
+    static auto create(IResourceScheduler *scheduler, const Description &description)
         -> util::RefCountedPtr<RendererBuffer>;
+
+    ~RendererBuffer() noexcept = default;
+
+    RendererBuffer(const RendererBuffer &) = delete;
+    auto operator=(const RendererBuffer &) = delete;
+
+    RendererBuffer(RendererBuffer &&) = delete;
+    auto operator=(RendererBuffer &&) = delete;
+
+    auto description() const -> const Description & { return description_; }
+
+    auto buffer() const -> const Buffer & { return buffer_; }
+    auto nativeBuffer() const -> VkBuffer { return buffer_.buffer(); }
+
+private:
+    RendererBuffer(IResourceScheduler *scheduler, Buffer &&buffer, Description description);
+
+    Context *context_ = nullptr;
+    Buffer buffer_ = {};
+    Description description_ = {};
 };
 
 } // namespace graphics

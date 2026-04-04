@@ -4,7 +4,6 @@
 #include "graphics/memory.hpp"
 #include "graphics/renderer/format.hpp"
 #include "graphics/renderer/resource.hpp"
-#include "graphics/renderer/scheduler.hpp"
 
 namespace graphics {
 
@@ -76,8 +75,8 @@ public:
         std::span<uint8_t> init_data;
     };
 
-    static auto create(RendererScheduler *scheduler, const Description &desc) -> util::RefCountedPtr<RendererTexture>;
-    static auto createFromRgba(RendererScheduler *scheduler, const RgbaDescription &desc)
+    static auto create(IResourceScheduler *scheduler, const Description &desc) -> util::RefCountedPtr<RendererTexture>;
+    static auto createFromRgba(IResourceScheduler *scheduler, const RgbaDescription &desc)
         -> util::RefCountedPtr<RendererTexture>;
 
     ~RendererTexture() noexcept;
@@ -99,9 +98,8 @@ public:
 
 private:
     RendererTexture(
-        RendererScheduler *scheduler, Image &&image, Image::View &&view, VkSampler sampler, Description description);
+        IResourceScheduler *scheduler, Image &&image, Image::View &&view, VkSampler sampler, Description description);
 
-    Context *context_ = nullptr;
     Image image_ = {};
     Image::View view_ = {};
     VkSampler sampler_ = VK_NULL_HANDLE;
