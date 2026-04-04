@@ -73,17 +73,7 @@ private:
         cbBufferDataType data_ = {};
     };
 
-    template <typename T, typename Tag, uint32_t kPoolSize> class ResourcePool;
-    class BindlessTexturePool;
-
-    // simple helper class to help us with our descriptor pools
-    // it is bound to the descriptor set layout, so it only holds
-    // enough descriptors for N layouts, where N is the number of
-    // frames in flight
-    template <uint32_t kNumSets = 1ull> class DescriptorSetHelper;
-
 public:
-    static constexpr uint32_t kNumFramesInFlight = 2;
     static constexpr uint32_t kNumMaxPointLights = 20;
     static constexpr uint32_t kNumMaxStaticObjects = 1024;
     static constexpr uint32_t kNumMaxSkinnedObjects = 128;
@@ -401,58 +391,6 @@ public:
 
         VkDeviceSize vertex_buffer_size_;
         VkDeviceSize index_buffer_size_;
-
-        friend class Renderer;
-    };
-
-    class Texture final {
-    public:
-        enum class MagFilter {
-            eNearest,
-            eLinear,
-        };
-
-        enum class MinFilter {
-            eNearest,
-            eLinear,
-        };
-
-        struct Description {
-            uint32_t width;
-            uint32_t height;
-            MagFilter mag_filter;
-            MinFilter min_filter;
-            bool is_target;
-            uint32_t samples;
-            VkFormat format;
-        };
-
-        Texture(const Texture &) = delete;
-        auto operator=(const Texture &) = delete;
-
-        Texture(Texture &&) noexcept;
-        auto operator=(Texture &&) noexcept -> Texture &;
-
-        ~Texture() noexcept;
-
-        auto description() const -> const Description & { return description_; }
-        auto image() const -> const Image & { return image_; }
-        auto imageView() const -> const Image::View & { return image_view_; }
-        auto sampler() const -> VkSampler { return sampler_; }
-
-    private:
-        static auto create(Renderer *renderer, const Description &desc) -> std::optional<Texture>;
-        static auto fromRgba(Renderer *renderer, const Description &desc, std::span<const uint8_t> rgba_data)
-            -> std::optional<Texture>;
-
-        Texture() = default;
-
-        Renderer *renderer_ = nullptr;
-        Description description_;
-
-        Image image_;
-        Image::View image_view_;
-        VkSampler sampler_ = VK_NULL_HANDLE;
 
         friend class Renderer;
     };
@@ -838,10 +776,6 @@ private:
     struct FrameData {
         std::unique_ptr<TypedBufferHelper<cbFrameHeapBuffer>> scene_buffer;
         std::unique_ptr<TypedBufferHelper<cbVectorHeapBuffer>> vector_buffer;
-        VkCommandBuffer command_buffer = VK_NULL_HANDLE;
-
-        VkFence fence = VK_NULL_HANDLE;
-        VkSemaphore present_semaphore = VK_NULL_HANDLE;
 
         std::optional<TextureId> geometry_target;
         std::optional<TextureId> vector_target_msaa;
@@ -869,24 +803,11 @@ private:
     Context *context_ = nullptr;
     Camera camera_;
 
-    Image depth_buffer_;
-    Image::View depth_buffer_view_;
-
-    struct SwapchainImageData {
-        VkSemaphore render_semaphore = VK_NULL_HANDLE;
-    };
-
     struct PendingResize {
         VkExtent2D surface_extent, framebuffer_extent;
     };
 
-    VkCommandPool command_pool_ = VK_NULL_HANDLE;
-
     std::optional<PendingResize> pending_resize_;
-    bool swapchain_needs_update_ = false;
-
-    std::array<FrameData, kNumFramesInFlight> frames_;
-    std::vector<SwapchainImageData> swapchain_data_;
 
     // resource pools
     std::unique_ptr<BindlessTexturePool> texture_pool_;
