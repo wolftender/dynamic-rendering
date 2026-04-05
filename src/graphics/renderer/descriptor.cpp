@@ -1,5 +1,7 @@
 #include <volk.h>
 
+#include "graphics/common.hpp"
+#include "graphics/vulkan.hpp"
 #include "graphics/renderer/descriptor.hpp"
 
 namespace graphics {
@@ -16,6 +18,73 @@ auto operator&(const DescriptorShaderStage &s1, const DescriptorShaderStage &s2)
 
 auto operator~(const DescriptorShaderStage &s) -> DescriptorShaderStage {
     return static_cast<DescriptorShaderStage>(~static_cast<VkShaderStageFlags>(s));
+}
+
+inline auto descriptorTypeToVk(const DescriptorDataType &data_type) -> VkDescriptorType {
+    switch (data_type) {
+    case graphics::DescriptorDataType::eSamplerTexture:
+        return VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    case graphics::DescriptorDataType::eShaderStorageBuffer:
+        return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    case graphics::DescriptorDataType::eUniformBuffer:
+        return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    default:
+        return VK_DESCRIPTOR_TYPE_MAX_ENUM;
+    }
+}
+
+auto DescriptorPool::create(Context *context, const Description &description) -> DescriptorPool {
+    std::vector<VkDescriptorPoolSize> pool_sizes;
+
+    std::transform(
+        description.pool_sizes.begin(), description.pool_sizes.end(), std::back_inserter(pool_sizes),
+        [](const auto pool_size) {
+        return VkDescriptorPoolSize{
+            .type = descriptorTypeToVk(pool_size.type),
+            .descriptorCount = pool_size.count,
+        };
+    });
+
+    VkDescriptorPoolCreateInfo pool_info = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+        .maxSets = description.max_sets,
+        .poolSizeCount = static_cast<uint32_t>(pool_sizes.size()),
+        .pPoolSizes = pool_sizes.data(),
+    };
+
+    VkDescriptorPool native_pool = VK_NULL_HANDLE;
+    VK_CHECK_ERROR(vkCreateDescriptorPool(context->device(), &pool_info, nullptr, &native_pool));
+
+    return DescriptorPool{context, native_pool, description};
+}
+
+DescriptorPool::~DescriptorPool() noexcept {
+    if (VK_NULL_HANDLE != pool_) {
+        vkDestroyDescriptorPool(context_->device(), pool_, nullptr);
+        pool_ = VK_NULL_HANDLE;
+    }
+}
+
+DescriptorPool::DescriptorPool(DescriptorPool &&other) noexcept {
+    context_ = other.context_;
+    pool_ = other.pool_;
+    description_ = std::move(other.description_);
+
+    other.pool_ = VK_NULL_HANDLE;
+    other.context_ = nullptr;
+}
+
+auto DescriptorPool::operator=(DescriptorPool &&other) noexcept -> DescriptorPool & {
+    if (this != &other) {
+        context_ = other.context_;
+        pool_ = other.pool_;
+        description_ = std::move(other.description_);
+
+        other.pool_ = VK_NULL_HANDLE;
+        other.context_ = nullptr;
+    }
+
+    return *this;
 }
 
 auto DescriptorLayout::create(IResourceScheduler *scheduler, const Description &description)

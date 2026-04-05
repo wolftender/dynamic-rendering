@@ -67,6 +67,14 @@ RendererScheduler::~RendererScheduler() noexcept {
     LogInfo("vulkan: releasing scheduler resources");
     VK_CHECK_ERROR(vkDeviceWaitIdle(context_->device()));
 
+    for (auto &frame : per_frame_data_) {
+        for (auto *resource : frame.deletion_queue) {
+            delete resource;
+        }
+
+        frame.deletion_queue.clear();
+    }
+
     if (VK_NULL_HANDLE != command_pool_) {
         vkDestroyCommandPool(context_->device(), command_pool_, nullptr);
         command_pool_ = VK_NULL_HANDLE;
@@ -92,6 +100,15 @@ RendererScheduler::~RendererScheduler() noexcept {
             image_data.render_semaphore = VK_NULL_HANDLE;
         }
     }
+}
+
+auto RendererScheduler::safeDelete(RendererResource *resource) -> void {
+    const auto last_frame_used = resource->getLastScheduledFrame();
+    if (!last_frame_used.has_value()) {
+        delete resource;
+    }
+
+    per_frame_data_[last_frame_used.value() % kNumFramesInFlight].deletion_queue.emplace_back(resource);
 }
 
 auto RendererScheduler::resizeSwapchain(const VkExtent2D &surface_extent, const VkExtent2D &framebuffer_extent)

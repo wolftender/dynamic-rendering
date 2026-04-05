@@ -80,6 +80,8 @@ public:
     static auto create(Context *context) -> std::unique_ptr<RendererScheduler>;
 
     // IResourceScheduler
+    auto safeDelete(RendererResource *resource) -> void override;
+
     auto context() -> Context * override { return context_; }
     auto context() const -> const Context * override { return context_; }
     auto currentFrameIndex() const -> uint32_t override { return current_frame_index_; }

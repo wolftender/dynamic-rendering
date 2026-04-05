@@ -32,8 +32,8 @@ public:
     };
 
     virtual ~IResourceScheduler() = default;
-    virtual auto safeDelete(const RendererResource *) -> void;
 
+    virtual auto safeDelete(RendererResource *resource) -> void = 0;
     virtual auto context() const -> const Context * = 0;
     virtual auto context() -> Context * = 0;
     virtual auto currentFrameIndex() const -> uint32_t = 0;

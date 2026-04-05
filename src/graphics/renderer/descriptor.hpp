@@ -2,6 +2,8 @@
 #include <array>
 #include <vector>
 
+#include <volk.h>
+
 #include "common/refcounted.hpp"
 
 #include "graphics/common.hpp"
@@ -36,7 +38,46 @@ struct DescriptorDescription {
     uint32_t num_bindings;
 };
 
-class DescriptorLayout final : RendererResource {
+class DescriptorPool final {
+public:
+    struct Description {
+        struct PoolSize {
+            DescriptorDataType type;
+            uint32_t count;
+        };
+
+        std::vector<PoolSize> pool_sizes;
+        uint32_t max_sets;
+    };
+
+    static auto create(Context *context, const Description &description) -> DescriptorPool;
+
+    DescriptorPool() = default;
+    ~DescriptorPool() noexcept;
+
+    DescriptorPool(const DescriptorPool &) = delete;
+    auto operator=(const DescriptorPool &) = delete;
+
+    DescriptorPool(DescriptorPool &&) noexcept;
+    auto operator=(DescriptorPool &&) noexcept -> DescriptorPool &;
+
+    operator bool() const { return valid(); }
+    auto valid() const -> bool { return VK_NULL_HANDLE != pool_; }
+
+    auto nativeDescriptorPool() const -> VkDescriptorPool { return pool_; }
+    auto maxSets() const -> uint32_t { return description_.max_sets; }
+    auto poolSizes() const -> const std::vector<Description::PoolSize> & { return description_.pool_sizes; }
+
+private:
+    DescriptorPool(Context *context, VkDescriptorPool pool, const Description &description)
+        : context_{context}, pool_{pool}, description_{description} {}
+
+    Context *context_ = nullptr;
+    VkDescriptorPool pool_ = VK_NULL_HANDLE;
+    Description description_ = {};
+};
+
+class DescriptorLayout final : public RendererResource {
 public:
     struct Description {
         std::vector<DescriptorDescription> layout;
@@ -78,13 +119,12 @@ template <uint32_t kNumSets> class DescriptorSetArray final : public RendererRes
 public:
     static auto create(IResourceScheduler *scheduler, const DescriptorLayout::Description &description)
         -> util::RefCountedPtr<DescriptorSetArray> {
-        util::RefCountedPtr<DescriptorSetArray> array{new (std::nothrow) DescriptorSetArray()};
+        util::RefCountedPtr<DescriptorSetArray> array{new (std::nothrow) DescriptorSetArray<kNumSets>(scheduler)};
         if (!array) {
             LogError("vulkan: cannot allocate descriptor set array");
             return nullptr;
         }
 
-        array->scheduler_ = scheduler;
         array->layout_ = DescriptorLayout::create(scheduler, description);
 
         const auto num_sampler_textures = array->layout_->numSamplerTextures();
@@ -92,39 +132,29 @@ public:
         const auto num_uniform_buffers = array->layout_->numUniformBuffers();
         const auto variable_desc_max_count = array->layout_->variableDescMaxCount();
 
-        std::vector<VkDescriptorPoolSize> pool_sizes;
+        DescriptorPool::Description pool_description = {
+            .max_sets = kNumSets,
+        };
+
         if (num_sampler_textures > 0) {
-            pool_sizes.push_back(
-                VkDescriptorPoolSize{
-                    .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                    .descriptorCount = num_sampler_textures * kNumSets,
-                });
+            pool_description.pool_sizes.emplace_back(
+                DescriptorPool::Description::PoolSize{
+                    DescriptorDataType::eSamplerTexture, num_sampler_textures * kNumSets});
         }
 
         if (num_storage_buffers > 0) {
-            pool_sizes.push_back(
-                VkDescriptorPoolSize{
-                    .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                    .descriptorCount = num_storage_buffers * kNumSets,
-                });
+            pool_description.pool_sizes.emplace_back(
+                DescriptorPool::Description::PoolSize{
+                    DescriptorDataType::eShaderStorageBuffer, num_storage_buffers * kNumSets});
         }
 
         if (num_uniform_buffers > 0) {
-            pool_sizes.push_back(
-                VkDescriptorPoolSize{
-                    .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                    .descriptorCount = num_uniform_buffers * kNumSets,
-                });
+            pool_description.pool_sizes.emplace_back(
+                DescriptorPool::Description::PoolSize{
+                    DescriptorDataType::eUniformBuffer, num_uniform_buffers * kNumSets});
         }
 
-        VkDescriptorPoolCreateInfo pool_info = {
-            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-            .maxSets = kNumSets,
-            .poolSizeCount = static_cast<uint32_t>(pool_sizes.size()),
-            .pPoolSizes = pool_sizes.data(),
-        };
-
-        VK_CHECK_ERROR(vkCreateDescriptorPool(scheduler->context()->device(), &pool_info, nullptr, &array->pool_));
+        array->pool_ = DescriptorPool::create(scheduler->context(), pool_description);
 
         // allocate the descriptor sets
         std::array<uint32_t, kNumSets> desc_counts;
@@ -141,13 +171,13 @@ public:
         // https://github.com/KhronosGroup/Vulkan-Docs/issues/1236
         std::array<VkDescriptorSetLayout, kNumSets> layouts;
         for (size_t i = 0; i < kNumSets; ++i) {
-            layouts[i] = array->layout_;
+            layouts[i] = array->layout()->nativeLayout();
         }
 
         VkDescriptorSetAllocateInfo set_alloc_info = {
             .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
             .pNext = (variable_desc_max_count > 0) ? &variable_desc_info : nullptr,
-            .descriptorPool = array->pool_,
+            .descriptorPool = array->pool().nativeDescriptorPool(),
             .descriptorSetCount = kNumSets,
             .pSetLayouts = layouts.data(),
         };
@@ -156,14 +186,7 @@ public:
         return array;
     }
 
-    ~DescriptorSetArray() noexcept {
-        const auto device = scheduler()->context()->device();
-
-        if (VK_NULL_HANDLE != pool_) {
-            vkDestroyDescriptorPool(device, pool_, nullptr);
-            pool_ = VK_NULL_HANDLE;
-        }
-    }
+    ~DescriptorSetArray() noexcept = default;
 
     DescriptorSetArray(const DescriptorSetArray &) = delete;
     auto operator=(const DescriptorSetArray &) = delete;
@@ -171,18 +194,18 @@ public:
     DescriptorSetArray(DescriptorSetArray &&) noexcept = delete;
     auto operator=(DescriptorSetArray &&) noexcept = delete;
 
-    auto pool() const -> VkDescriptorPool { return pool_; }
+    auto pool() const -> const DescriptorPool & { return pool_; }
     auto description() const -> const DescriptorLayout::Description & { return layout_->description(); }
     auto layout() const -> DescriptorLayout * { return layout_; }
     auto getSetForFrame(uint32_t frame) const -> VkDescriptorSet { return sets_[frame]; }
 
 private:
-    DescriptorSetArray() = default;
+    DescriptorSetArray(IResourceScheduler *scheduler) : RendererResource{scheduler} {}
 
     Context *context_ = nullptr;
 
     util::RefCountedPtr<DescriptorLayout> layout_ = {};
-    VkDescriptorPool pool_ = VK_NULL_HANDLE;
+    DescriptorPool pool_ = {};
 
     std::array<VkDescriptorSet, kNumSets> sets_;
 };

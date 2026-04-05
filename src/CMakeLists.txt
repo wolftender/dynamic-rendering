@@ -17,6 +17,11 @@ set(GAME_SOURCE_FILE_LIST
     ${GAME_SRC_DIR}/graphics/memory.cpp
     ${GAME_SRC_DIR}/graphics/vulkan.cpp
     ${GAME_SRC_DIR}/graphics/renderer.cpp
+    ${GAME_SRC_DIR}/graphics/renderer/buffer.cpp
+    ${GAME_SRC_DIR}/graphics/renderer/descriptor.cpp
+    ${GAME_SRC_DIR}/graphics/renderer/pipeline.cpp
+    ${GAME_SRC_DIR}/graphics/renderer/scheduler.cpp
+    ${GAME_SRC_DIR}/graphics/renderer/texture.cpp
 )
 
 # compresset assets

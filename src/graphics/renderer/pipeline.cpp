@@ -5,6 +5,40 @@
 
 namespace graphics {
 
+RenderPipeline::~RenderPipeline() noexcept {
+    if (VK_NULL_HANDLE != pipeline_) {
+        vkDestroyPipeline(scheduler()->context()->device(), pipeline_, nullptr);
+        pipeline_ = VK_NULL_HANDLE;
+    }
+
+    if (VK_NULL_HANDLE != layout_) {
+        vkDestroyPipelineLayout(scheduler()->context()->device(), layout_, nullptr);
+        layout_ = VK_NULL_HANDLE;
+    }
+
+    if (VK_NULL_HANDLE != shader_module_) {
+        vkDestroyShaderModule(scheduler()->context()->device(), shader_module_, nullptr);
+        shader_module_ = VK_NULL_HANDLE;
+    }
+}
+
+ComputePipeline::~ComputePipeline() noexcept {
+    if (VK_NULL_HANDLE != pipeline_) {
+        vkDestroyPipeline(scheduler()->context()->device(), pipeline_, nullptr);
+        pipeline_ = VK_NULL_HANDLE;
+    }
+
+    if (VK_NULL_HANDLE != layout_) {
+        vkDestroyPipelineLayout(scheduler()->context()->device(), layout_, nullptr);
+        layout_ = VK_NULL_HANDLE;
+    }
+
+    if (VK_NULL_HANDLE != shader_module_) {
+        vkDestroyShaderModule(scheduler()->context()->device(), shader_module_, nullptr);
+        shader_module_ = VK_NULL_HANDLE;
+    }
+}
+
 ComputePipelineBuilder::ComputePipelineBuilder(IResourceScheduler *scheduler) : scheduler_{scheduler} {}
 
 auto ComputePipelineBuilder::withShaderStage(

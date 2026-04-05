@@ -150,6 +150,7 @@ public:
         auto operator=(ActorMesh &&) noexcept -> ActorMesh & = default;
 
         auto inputMesh() const -> AnimatedMeshId { return input_mesh_; }
+        auto vertexBuffer() -> RendererBuffer * { return output_buffer_->getCurrent(); }
         auto vertexBuffer() const -> const RendererBuffer * { return output_buffer_->getCurrent(); }
         auto transformBuffer() -> MutableSharedBuffer<cbSkinningBuffer> & { return buffer_; }
         auto transformBuffer() const -> const MutableSharedBuffer<cbSkinningBuffer> & { return buffer_; }
@@ -159,11 +160,8 @@ public:
     private:
         static auto create(Renderer *renderer, AnimatedMeshId mesh) -> std::optional<ActorMesh>;
 
-        ActorMesh(
-            RendererScheduler *scheduler, AnimatedMeshId input_mesh, MutableSharedBuffer<cbSkinningBuffer> &&buffer)
-            : scheduler_{scheduler}, input_mesh_{input_mesh}, buffer_{std::move(buffer)} {};
-
-        RendererScheduler *scheduler_ = nullptr;
+        ActorMesh(AnimatedMeshId input_mesh, MutableSharedBuffer<cbSkinningBuffer> &&buffer)
+            : input_mesh_{input_mesh}, buffer_{std::move(buffer)} {};
 
         AnimatedMeshId input_mesh_;
         std::unique_ptr<RendererScheduler::MutableBuffer> output_buffer_;
@@ -198,6 +196,7 @@ public:
 
     struct Description {
         Context *context;
+        RendererScheduler *scheduler;
         std::unique_ptr<IShaderLoader> shader_loader;
     };
 
@@ -307,7 +306,7 @@ public:
 
     static auto create(const Description &description) -> std::unique_ptr<Renderer>;
 
-    ~Renderer() noexcept;
+    ~Renderer() noexcept = default;
 
     Renderer(const Renderer &) = delete;
     auto operator=(const Renderer &) = delete;
@@ -563,10 +562,11 @@ private:
     Renderer() = default;
 
     Context *context_ = nullptr;
+    RendererScheduler *scheduler_ = nullptr;
+
     Camera camera_;
 
     std::optional<PendingResize> pending_resize_;
-    std::unique_ptr<RendererScheduler> scheduler_;
     std::array<PerFrameData, RendererScheduler::kNumFramesInFlight> per_frame_data_;
     MutableSharedBuffer<cbFrameHeapBuffer> frame_heap_;
     MutableSharedBuffer<cbVectorHeapBuffer> vector_heap_;
@@ -590,8 +590,6 @@ private:
     util::FixedSizeQueue<SkinnedDrawDescription, kNumMaxSkinnedObjects> skinning_queue_;
     util::FixedSizeQueue<OpaqueDrawDescription, kNumMaxStaticObjects> draw_queue_;
     util::FixedSizeQueue<VectorDrawDescription, kNumMaxVectorMeshes> vector_queue_;
-
-    uint32_t current_frame_ = 0;
 };
 
 } // namespace graphics

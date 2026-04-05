@@ -13,12 +13,30 @@
 namespace graphics {
 
 template <uint32_t kNumTexturePoolSize> class BindlessTexturePool final {
+private:
+    struct TextureWrapper {
+        util::RefCountedPtr<RendererTexture> texture;
+    };
+
 public:
     struct TextureTag {};
 
     using TextureDescriptorArray = RendererScheduler::DescriptorSetArray;
-    using TexturePool = util::ManagedPool<util::RefCountedPtr<RendererTexture>, kNumTexturePoolSize, TextureTag>;
-    using Id = TexturePool::Id;
+    using TexturePool = util::ManagedPool<TextureWrapper, kNumTexturePoolSize, TextureTag>;
+
+    struct Id final {
+    public:
+        using Resource = RendererTexture;
+
+        Id(TexturePool::Id id) : id_{id} {}
+        operator typename TexturePool::Id() const { return id_; }
+
+        auto index() const -> uint32_t { return id_.index(); }
+        auto generation() const -> uint32_t { return id_.generation(); }
+
+    private:
+        TexturePool::Id id_;
+    };
 
     static auto create(RendererScheduler *scheduler) -> std::unique_ptr<BindlessTexturePool> {
         std::unique_ptr<BindlessTexturePool> pool{new (std::nothrow) BindlessTexturePool()};
@@ -41,7 +59,7 @@ public:
                 },
         };
 
-        pool->descriptor_helper_ = TextureDescriptorArray::create(scheduler, texture_descriptor_desc);
+        pool->descriptor_array_ = TextureDescriptorArray::create(scheduler, texture_descriptor_desc);
 
         // create a placeholder image for null textures
         {
@@ -91,11 +109,11 @@ public:
     BindlessTexturePool(BindlessTexturePool &&) noexcept = delete;
     auto operator=(BindlessTexturePool &&) noexcept = delete;
 
-    auto descriptorArray() const -> const TextureDescriptorArray & { return *descriptor_helper_; }
-    auto descriptorLayout() const -> DescriptorLayout * { return descriptor_helper_->layout(); }
+    auto descriptorArray() const -> const TextureDescriptorArray & { return *descriptor_array_; }
+    auto descriptorLayout() const -> DescriptorLayout * { return descriptor_array_->layout(); }
 
     auto descriptorSet() const -> VkDescriptorSet {
-        return descriptor_helper_->getSetForFrame(scheduler_->currentFrameIndex());
+        return descriptor_array_->getSetForFrame(scheduler_->currentFrameIndex());
     }
 
     auto storeResource(util::RefCountedPtr<RendererTexture> resource) -> std::optional<Id> {
@@ -103,7 +121,7 @@ public:
         const auto vk_view = resource->nativeView();
         const auto vk_sampler = resource->nativeSampler();
 
-        const auto id = pool_.store(std::move(resource));
+        const auto id = pool_.store(TextureWrapper{std::move(resource)});
         if (!id.has_value()) {
             return std::nullopt;
         }
@@ -117,17 +135,16 @@ public:
         return id;
     }
 
-    auto getResource(const TexturePool::Id &id) const -> const util::RefCountedPtr<RendererTexture> {
-        return pool_.getResource(id);
-    }
+    auto getResource(const Id &id) -> RendererTexture * { return pool_.get(id)->texture; }
+    auto getResource(const Id &id) const -> const RendererTexture * { return pool_.get(id)->texture; }
 
-    auto destroyResource(const TexturePool::Id &id) -> void {
+    auto destroyResource(const Id &id) -> void {
         const auto index = id.index();
 
         descriptors_[index].sampler = null_texture_->nativeSampler();
         descriptors_[index].imageView = null_texture_->nativeView();
 
-        return pool_.destroyResource(id);
+        return pool_.destroy(id);
     }
 
     auto updateDescriptorSet() -> void {
@@ -139,7 +156,7 @@ public:
 
         VkWriteDescriptorSet write_set_desc = {
             .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .dstSet = descriptorSet(frame),
+            .dstSet = descriptorSet(),
             .dstBinding = 0,
             .descriptorCount = kNumTexturePoolSize,
             .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -175,7 +192,7 @@ private:
     std::bitset<RendererScheduler::kNumFramesInFlight> dirty_bit_;
 
     util::RefCountedPtr<RendererTexture> null_texture_;
-    std::unique_ptr<TextureDescriptorArray> descriptor_helper_;
+    util::RefCountedPtr<TextureDescriptorArray> descriptor_array_;
     std::array<VkDescriptorImageInfo, kNumTexturePoolSize> descriptors_;
 
     TexturePool pool_;

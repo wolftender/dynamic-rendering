@@ -82,7 +82,7 @@ auto Renderer::ActorMesh::create(Renderer *renderer, AnimatedMeshId mesh) -> std
         return std::nullopt;
     }
 
-    ActorMesh actor{scheduler, mesh, std::move(bone_buffer)};
+    ActorMesh actor{mesh, std::move(bone_buffer)};
     actor.num_vertices_ = util::bytes::align_ptr(base_mesh->numVertices(), kVertexBufferAlign);
     actor.output_buffer_size_ = actor.num_vertices_ * sizeof(StaticVertex);
 
@@ -105,18 +105,18 @@ auto Renderer::create(const Description &description) -> std::unique_ptr<Rendere
     }
 
     renderer->context_ = description.context;
-    renderer->scheduler_ = RendererScheduler::create(renderer->context_);
-    renderer->texture_pool_ = BindlessTexturePool<kNumTexturePoolSize>::create(renderer->scheduler_.get());
+    renderer->scheduler_ = description.scheduler;
+    renderer->texture_pool_ = BindlessTexturePool<kNumTexturePoolSize>::create(renderer->scheduler_);
 
     renderer->createRenderTargets();
 
-    renderer->frame_heap_ = MutableSharedBuffer<cbFrameHeapBuffer>::create(renderer->scheduler_.get());
+    renderer->frame_heap_ = MutableSharedBuffer<cbFrameHeapBuffer>::create(renderer->scheduler_);
     if (!renderer->frame_heap_.valid()) {
         LogError("vulkan: renderer failed to create frame heap buffer");
         return nullptr;
     }
 
-    renderer->vector_heap_ = MutableSharedBuffer<cbVectorHeapBuffer>::create(renderer->scheduler_.get());
+    renderer->vector_heap_ = MutableSharedBuffer<cbVectorHeapBuffer>::create(renderer->scheduler_);
     if (!renderer->vector_heap_.valid()) {
         LogError("vulkan: renderer failed to create vector heap buffer");
         return nullptr;
@@ -150,6 +150,16 @@ auto Renderer::create(const Description &description) -> std::unique_ptr<Rendere
     return renderer;
 }
 
+auto Renderer::createRgbaTexture(const RendererTexture::RgbaDescription &desc) -> std::optional<TextureId> {
+    auto texture = RendererTexture::createFromRgba(scheduler_, desc);
+    if (!texture) {
+        LogError("vulkan: renderer failed to create rgba texture");
+        return std::nullopt;
+    }
+
+    return texture_pool_->storeResource(texture);
+}
+
 auto Renderer::createSkinningPipeline(IShaderLoader &shader_loader) -> util::Result {
     const auto shader_bytecode = shader_loader.loadSkinningPassShader();
     if (!shader_bytecode.has_value()) {
@@ -157,7 +167,7 @@ auto Renderer::createSkinningPipeline(IShaderLoader &shader_loader) -> util::Res
         return util::Result::eFailure;
     }
 
-    ComputePipelineBuilder builder{scheduler_.get()};
+    ComputePipelineBuilder builder{scheduler_};
 
     skinning_pipeline_ = builder
                              .withShaderStage(
@@ -178,7 +188,7 @@ auto Renderer::createGeometryPipeline(IShaderLoader &shader_loader) -> util::Res
         return util::Result::eFailure;
     }
 
-    RenderPipelineBuilder builder{scheduler_.get()};
+    RenderPipelineBuilder builder{scheduler_};
 
     geometry_pipeline_ =
         builder
@@ -217,7 +227,7 @@ auto Renderer::createVectorPipeline(IShaderLoader &shader_loader) -> util::Resul
         return util::Result::eFailure;
     }
 
-    RenderPipelineBuilder builder{scheduler_.get()};
+    RenderPipelineBuilder builder{scheduler_};
 
     vector_pipeline_ =
         builder
@@ -254,7 +264,7 @@ auto Renderer::createLightingPipeline(IShaderLoader &shader_loader) -> util::Res
         return util::Result::eFailure;
     }
 
-    RenderPipelineBuilder builder{scheduler_.get()};
+    RenderPipelineBuilder builder{scheduler_};
 
     lighting_pipeline_ =
         builder
@@ -285,7 +295,7 @@ auto Renderer::createInterfacePipeline(IShaderLoader &shader_loader) -> util::Re
         return util::Result::eFailure;
     }
 
-    RenderPipelineBuilder builder{scheduler_.get()};
+    RenderPipelineBuilder builder{scheduler_};
 
     interface_pipeline_ =
         builder
@@ -330,7 +340,7 @@ auto Renderer::createRenderTargets() -> void {
         .format = static_cast<Format>(context_->supportedDepthFormat()),
     };
 
-    depth_buffer_ = texture_pool_->storeResource(RendererTexture::create(scheduler_.get(), depth_buffer_desc));
+    depth_buffer_ = texture_pool_->storeResource(RendererTexture::create(scheduler_, depth_buffer_desc));
 
     RendererTexture::Description msaa_target_desc = {
         .width = surface_extent.width,
@@ -365,15 +375,15 @@ auto Renderer::createRenderTargets() -> void {
             deleteTexture(per_frame_data_[i].vector_target_msaa.value());
         }
 
-        if (auto geometry_target = RendererTexture::create(scheduler_.get(), color_target_desc)) {
+        if (auto geometry_target = RendererTexture::create(scheduler_, color_target_desc)) {
             per_frame_data_[i].geometry_target = texture_pool_->storeResource(geometry_target);
         }
 
-        if (auto vector_target = RendererTexture::create(scheduler_.get(), color_target_desc)) {
+        if (auto vector_target = RendererTexture::create(scheduler_, color_target_desc)) {
             per_frame_data_[i].vector_target = texture_pool_->storeResource(vector_target);
         }
 
-        if (auto vector_target_msaa = RendererTexture::create(scheduler_.get(), msaa_target_desc)) {
+        if (auto vector_target_msaa = RendererTexture::create(scheduler_, msaa_target_desc)) {
             per_frame_data_[i].vector_target_msaa = texture_pool_->storeResource(vector_target_msaa);
         }
     }
