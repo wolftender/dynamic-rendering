@@ -6,13 +6,16 @@
 #include <GLFW/glfw3.h>
 
 #include "logger.hpp"
-#include "util.hpp"
-#include "vulkan.hpp"
-#include "renderer.hpp"
 #include "act.hpp"
 #include "assets.hpp"
 #include "model.hpp"
 #include "canvas.hpp"
+
+#include "common/utility.hpp"
+
+#include "graphics/common.hpp"
+#include "graphics/vulkan.hpp"
+#include "graphics/renderer.hpp"
 
 #define GLFW_FATAL_ERROR(glfw_call_name)                                                                               \
     do {                                                                                                               \
@@ -105,6 +108,7 @@ private:
     GLFWwindow *window_handle_ = nullptr;
     std::unique_ptr<graphics::Instance> graphics_instance_ = {};
     std::unique_ptr<graphics::Context> graphics_context_ = {};
+    std::unique_ptr<graphics::RendererScheduler> render_scheduler_ = {};
     std::unique_ptr<graphics::Renderer> renderer_ = {};
 
     std::unique_ptr<graphics::Model> test_model_ = {};
@@ -260,8 +264,12 @@ auto ApplicationState::create(const Description &description) -> std::unique_ptr
     state->graphics_context_ = state->graphics_instance_->createContext(context_desc);
     LogInfo("created graphics context");
 
+    state->render_scheduler_ = graphics::RendererScheduler::create(state->graphics_context_.get());
+    LogInfo("created rendering scheduler");
+
     graphics::Renderer::Description renderer_desc = {
         .context = state->graphics_context_.get(),
+        .scheduler = state->render_scheduler_.get(),
         .shader_loader = std::make_unique<ShaderLoaderImpl>(&state->main_archive_->reader()),
     };
 

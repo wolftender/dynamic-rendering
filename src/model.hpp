@@ -5,7 +5,7 @@
 #include <glm/gtc/quaternion.hpp>
 
 #include "act.hpp"
-#include "renderer.hpp"
+#include "graphics/renderer.hpp"
 
 namespace graphics {
 

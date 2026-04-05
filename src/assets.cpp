@@ -1,6 +1,9 @@
 #include "assets.hpp"
 #include "logger.hpp"
 
+#include "common/byteutils.hpp"
+#include "common/binaryreader.hpp"
+
 #include <lz4.h>
 
 #ifdef _WIN32

@@ -5,13 +5,23 @@ add_library(thirdparty OBJECT ${GAME_SRC_DIR}/thirdparty.cpp)
 
 set(GAME_SOURCE_FILE_LIST
     ${GAME_SRC_DIR}/main.cpp
-    ${GAME_SRC_DIR}/util.cpp
     ${GAME_SRC_DIR}/act.cpp
-    ${GAME_SRC_DIR}/vulkan.cpp
-    ${GAME_SRC_DIR}/renderer.cpp
     ${GAME_SRC_DIR}/assets.cpp
     ${GAME_SRC_DIR}/model.cpp
     ${GAME_SRC_DIR}/canvas.cpp
+    ${GAME_SRC_DIR}/common/utility.cpp
+    ${GAME_SRC_DIR}/common/byteutils.cpp
+    ${GAME_SRC_DIR}/common/binaryreader.cpp
+    ${GAME_SRC_DIR}/graphics/common.cpp
+    ${GAME_SRC_DIR}/graphics/camera.cpp
+    ${GAME_SRC_DIR}/graphics/memory.cpp
+    ${GAME_SRC_DIR}/graphics/vulkan.cpp
+    ${GAME_SRC_DIR}/graphics/renderer.cpp
+    ${GAME_SRC_DIR}/graphics/renderer/buffer.cpp
+    ${GAME_SRC_DIR}/graphics/renderer/descriptor.cpp
+    ${GAME_SRC_DIR}/graphics/renderer/pipeline.cpp
+    ${GAME_SRC_DIR}/graphics/renderer/scheduler.cpp
+    ${GAME_SRC_DIR}/graphics/renderer/texture.cpp
 )
 
 # compresset assets

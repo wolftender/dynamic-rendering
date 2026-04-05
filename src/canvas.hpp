@@ -5,7 +5,7 @@
 
 #include <glm/glm.hpp>
 
-#include "renderer.hpp"
+#include "graphics/renderer.hpp"
 
 namespace graphics {
 
