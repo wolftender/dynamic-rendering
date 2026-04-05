@@ -101,6 +101,7 @@ private:
 
 class MemoryHelper final {
 public:
+    static auto create(Context *context) -> std::unique_ptr<MemoryHelper>;
     ~MemoryHelper() noexcept;
 
     MemoryHelper(const MemoryHelper &&) = delete;
@@ -126,8 +127,6 @@ public:
     }
 
 private:
-    static auto create(Context *context) -> std::unique_ptr<MemoryHelper>;
-
     MemoryHelper() = default;
 
     auto beginCommandBuffer() const -> void;
@@ -142,8 +141,6 @@ private:
     VkSemaphore upload_semaphore_ = VK_NULL_HANDLE;
     VkCommandPool command_pool_ = VK_NULL_HANDLE;
     VkCommandBuffer command_buffer_ = VK_NULL_HANDLE;
-
-    friend class Context;
 };
 
 } // namespace graphics
