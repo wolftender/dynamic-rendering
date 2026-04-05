@@ -68,8 +68,9 @@ RendererScheduler::~RendererScheduler() noexcept {
     VK_CHECK_ERROR(vkDeviceWaitIdle(context_->device()));
 
     for (auto &frame : per_frame_data_) {
-        for (auto *resource : frame.deletion_queue) {
-            delete resource;
+        while (!frame.deletion_queue.empty()) {
+            delete frame.deletion_queue.front();
+            frame.deletion_queue.pop_front();
         }
 
         frame.deletion_queue.clear();
@@ -106,6 +107,7 @@ auto RendererScheduler::safeDelete(RendererResource *resource) -> void {
     const auto last_frame_used = resource->getLastScheduledFrame();
     if (!last_frame_used.has_value()) {
         delete resource;
+        return;
     }
 
     per_frame_data_[last_frame_used.value() % kNumFramesInFlight].deletion_queue.emplace_back(resource);
@@ -149,8 +151,9 @@ auto RendererScheduler::beginFrame() -> std::optional<FrameContext> {
     VK_CHECK_ERROR(vkResetFences(context_->device(), 1, &current_frame_data.fence));
 
     // garbage collect data referenced by the finished frame
-    for (auto *resource : current_frame_data.deletion_queue) {
-        delete resource;
+    while (!current_frame_data.deletion_queue.empty()) {
+        delete current_frame_data.deletion_queue.front();
+        current_frame_data.deletion_queue.pop_front();
     }
 
     current_frame_data.deletion_queue.clear();

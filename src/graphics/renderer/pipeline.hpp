@@ -186,6 +186,7 @@ public:
 
     auto withPolygonMode(VkPolygonMode mode) -> RenderPipelineBuilder &;
     auto withCullMode(VkCullModeFlags mode) -> RenderPipelineBuilder &;
+    auto withFrontFace(VkFrontFace face) -> RenderPipelineBuilder &;
     auto withSampleCount(VkSampleCountFlagBits count) -> RenderPipelineBuilder &;
 
     template <std::invocable<VkPipelineRasterizationStateCreateInfo &> F>

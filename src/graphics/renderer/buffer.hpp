@@ -26,7 +26,7 @@ public:
     };
 
     enum class MemoryType {
-        eHost,
+        eShared,
         eDevice,
     };
 

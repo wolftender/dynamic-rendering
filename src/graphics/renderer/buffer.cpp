@@ -25,7 +25,7 @@ auto RendererBuffer::create(
     Buffer native_buffer = {};
 
     switch (description.memory) {
-    case graphics::RendererBuffer::MemoryType::eDevice:
+    case graphics::RendererBuffer::MemoryType::eShared:
         native_buffer = scheduler->context()->memory().createSharedBuffer(usage, description.size);
         if (init_data.has_value()) {
             std::memcpy(native_buffer.cpuMappedPointer(), init_data->data(), init_data->size_bytes());
@@ -33,9 +33,9 @@ auto RendererBuffer::create(
 
         break;
 
-    case graphics::RendererBuffer::MemoryType::eHost:
+    case graphics::RendererBuffer::MemoryType::eDevice:
         if (init_data.has_value()) {
-            native_buffer = scheduler->context()->memory().createBuffer(usage, init_data.value());
+            native_buffer = scheduler->context()->memory().createBuffer(usage, init_data.value(), description.size);
         } else {
             native_buffer = scheduler->context()->memory().createDeviceBuffer(usage, description.size);
         }
@@ -47,8 +47,8 @@ auto RendererBuffer::create(
         return nullptr;
     }
 
-    return util::RefCountedPtr<RendererBuffer>{
-        new RendererBuffer(scheduler, std::move(native_buffer), std::move(description))};
+    return util::RefCountedPtr<RendererBuffer>::create(
+        new RendererBuffer(scheduler, std::move(native_buffer), std::move(description)));
 }
 
 auto operator|(const RendererBuffer::Usage &u1, const RendererBuffer::Usage &u2) -> RendererBuffer::Usage {

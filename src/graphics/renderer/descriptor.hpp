@@ -119,7 +119,8 @@ template <uint32_t kNumSets> class DescriptorSetArray final : public RendererRes
 public:
     static auto create(IResourceScheduler *scheduler, const DescriptorLayout::Description &description)
         -> util::RefCountedPtr<DescriptorSetArray> {
-        util::RefCountedPtr<DescriptorSetArray> array{new (std::nothrow) DescriptorSetArray<kNumSets>(scheduler)};
+        auto array =
+            util::RefCountedPtr<DescriptorSetArray>::create(new (std::nothrow) DescriptorSetArray<kNumSets>(scheduler));
         if (!array) {
             LogError("vulkan: cannot allocate descriptor set array");
             return nullptr;

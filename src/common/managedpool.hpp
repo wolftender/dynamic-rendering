@@ -28,6 +28,8 @@ public:
             storage_[i].resource = std::nullopt;
             storage_[i].generation = 0;
             storage_[i].identifier = i;
+
+            free_ids_.push(i);
         }
     }
 

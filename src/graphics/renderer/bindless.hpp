@@ -101,13 +101,18 @@ public:
         return pool;
     }
 
-    ~BindlessTexturePool() = default;
+    ~BindlessTexturePool() { LogInfo("vulkan: releasing renderer texture pool"); }
 
     BindlessTexturePool(const BindlessTexturePool &) = delete;
     auto operator=(const BindlessTexturePool &) = delete;
 
     BindlessTexturePool(BindlessTexturePool &&) noexcept = delete;
     auto operator=(BindlessTexturePool &&) noexcept = delete;
+
+    auto use(const IResourceScheduler::FrameContext &context) -> void {
+        descriptor_array_->addFrameReference(context);
+        null_texture_->addFrameReference(context);
+    }
 
     auto descriptorArray() const -> const TextureDescriptorArray & { return *descriptor_array_; }
     auto descriptorLayout() const -> DescriptorLayout * { return descriptor_array_->layout(); }

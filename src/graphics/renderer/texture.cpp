@@ -136,8 +136,8 @@ auto RendererTexture::create(IResourceScheduler *scheduler, const Description &d
 
     VK_CHECK_ERROR(vkCreateSampler(scheduler->context()->device(), &sampler_desc, nullptr, &native_sampler));
 
-    util::RefCountedPtr<RendererTexture> texture{new (std::nothrow) RendererTexture(
-        scheduler, std::move(native_image), std::move(native_view), std::move(native_sampler), description)};
+    auto texture = util::RefCountedPtr<RendererTexture>::create(new (std::nothrow) RendererTexture(
+        scheduler, std::move(native_image), std::move(native_view), std::move(native_sampler), description));
 
     return texture;
 }
@@ -161,7 +161,7 @@ auto RendererTexture::createFromRgba(IResourceScheduler *scheduler, const RgbaDe
     auto native_image = scheduler->context()->memory().createImageRgba(
         usage, VkExtent2D{description.width, description.height}, desc.init_data);
     auto native_view =
-        native_image.createView(VK_IMAGE_VIEW_TYPE_2D, VK_FORMAT_R8G8B8A8_SNORM, VK_IMAGE_ASPECT_COLOR_BIT);
+        native_image.createView(VK_IMAGE_VIEW_TYPE_2D, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_ASPECT_COLOR_BIT);
 
     const auto min_filter = minFilterToVk(description.min_filter);
     const auto mag_filter = magFilterToVk(description.mag_filter);
@@ -179,8 +179,8 @@ auto RendererTexture::createFromRgba(IResourceScheduler *scheduler, const RgbaDe
 
     VK_CHECK_ERROR(vkCreateSampler(scheduler->context()->device(), &sampler_desc, nullptr, &native_sampler));
 
-    util::RefCountedPtr<RendererTexture> texture{new (std::nothrow) RendererTexture(
-        scheduler, std::move(native_image), std::move(native_view), std::move(native_sampler), description)};
+    auto texture = util::RefCountedPtr<RendererTexture>::create(new (std::nothrow) RendererTexture(
+        scheduler, std::move(native_image), std::move(native_view), std::move(native_sampler), description));
 
     return texture;
 }

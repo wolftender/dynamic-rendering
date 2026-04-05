@@ -95,7 +95,7 @@ auto Renderer::ActorMesh::create(Renderer *renderer, AnimatedMeshId mesh) -> std
 
     actor.output_buffer_ = RendererScheduler::MutableBuffer::create(scheduler, buffer_desc);
     return actor;
-} // namespace graphics
+}
 
 auto Renderer::create(const Description &description) -> std::unique_ptr<Renderer> {
     std::unique_ptr<Renderer> renderer{new (std::nothrow) Renderer()};
@@ -149,6 +149,8 @@ auto Renderer::create(const Description &description) -> std::unique_ptr<Rendere
 
     return renderer;
 }
+
+Renderer::~Renderer() noexcept { LogInfo("vulkan: destroying all renderer resources"); }
 
 auto Renderer::createRgbaTexture(const RendererTexture::RgbaDescription &desc) -> std::optional<TextureId> {
     auto texture = RendererTexture::createFromRgba(scheduler_, desc);
@@ -242,6 +244,7 @@ auto Renderer::createVectorPipeline(IShaderLoader &shader_loader) -> util::Resul
                         .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
                         .entry_point = "fsMain",
                     }})
+            .withCullMode(VK_CULL_MODE_NONE)
             .withPrimitiveTopology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST)
             .withPushConstant<cbVectorPassPushConstants>(VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT)
             .withDescriptorSet(texture_pool_->descriptorLayout())
@@ -279,10 +282,12 @@ auto Renderer::createLightingPipeline(IShaderLoader &shader_loader) -> util::Res
                         .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
                         .entry_point = "fsMain",
                     }})
+            .withCullMode(VK_CULL_MODE_FRONT_BIT)
+            .withFrontFace(VK_FRONT_FACE_COUNTER_CLOCKWISE)
             .withPrimitiveTopology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST)
-            .withPushConstant<cbVectorPassPushConstants>(VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT)
+            .withPushConstant<cbLightingPassConstants>(VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT)
             .withDescriptorSet(texture_pool_->descriptorLayout())
-            .addColorAttachment(Format::SRGBA8_UNORM)
+            .addColorAttachment(static_cast<Format>(context_->swapchainFormat().format))
             .build();
 
     return util::Result::eSuccess;
@@ -310,10 +315,12 @@ auto Renderer::createInterfacePipeline(IShaderLoader &shader_loader) -> util::Re
                         .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
                         .entry_point = "fsMain",
                     }})
+            .withCullMode(VK_CULL_MODE_FRONT_BIT)
+            .withFrontFace(VK_FRONT_FACE_COUNTER_CLOCKWISE)
             .withPrimitiveTopology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST)
-            .withPushConstant<cbVectorPassPushConstants>(VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT)
+            .withPushConstant<cbUserInterfacePassConstants>(VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT)
             .withDescriptorSet(texture_pool_->descriptorLayout())
-            .addColorAttachmentAlphaBlend(Format::SRGBA8_UNORM)
+            .addColorAttachmentAlphaBlend(static_cast<Format>(context_->swapchainFormat().format))
             .build();
 
     return util::Result::eSuccess;
@@ -335,7 +342,7 @@ auto Renderer::createRenderTargets() -> void {
         .array_size = 1,
         .min_filter = RendererTexture::MinFilter::eLinear,
         .mag_filter = RendererTexture::MagFilter::eLinear,
-        .usage = RendererTexture::Usage::eUsageDepthAttachment,
+        .usage = RendererTexture::Usage::eUsageDepthAttachment | RendererTexture::Usage::eUsageShaderSample,
         .sample_count = RendererTexture::SampleCount::eSampleCount1,
         .format = static_cast<Format>(context_->supportedDepthFormat()),
     };
@@ -343,21 +350,23 @@ auto Renderer::createRenderTargets() -> void {
     depth_buffer_ = texture_pool_->storeResource(RendererTexture::create(scheduler_, depth_buffer_desc));
 
     RendererTexture::Description msaa_target_desc = {
+        .type = RendererTexture::TextureType::eTexture2D,
         .width = surface_extent.width,
         .height = surface_extent.height,
         .min_filter = RendererTexture::MinFilter::eLinear,
         .mag_filter = RendererTexture::MagFilter::eLinear,
-        .usage = RendererTexture::Usage::eUsageColorAttachment,
+        .usage = RendererTexture::Usage::eUsageColorAttachment | RendererTexture::Usage::eUsageShaderSample,
         .sample_count = RendererTexture::SampleCount::eSampleCount4,
         .format = Format::SRGBA8_UNORM,
     };
 
     RendererTexture::Description color_target_desc = {
+        .type = RendererTexture::TextureType::eTexture2D,
         .width = surface_extent.width,
         .height = surface_extent.height,
         .min_filter = RendererTexture::MinFilter::eLinear,
         .mag_filter = RendererTexture::MagFilter::eLinear,
-        .usage = RendererTexture::Usage::eUsageColorAttachment,
+        .usage = RendererTexture::Usage::eUsageColorAttachment | RendererTexture::Usage::eUsageShaderSample,
         .sample_count = RendererTexture::SampleCount::eSampleCount1,
         .format = Format::SRGBA8_UNORM,
     };
@@ -537,8 +546,8 @@ auto Renderer::scheduleFrameWork(const RendererScheduler::FrameContext &context)
         auto *input_mesh = anim_mesh_pool_.get(actor->inputMesh());
 
         // pass the buffers using push constants
-        skinning_constants.input_buffer = input_mesh->vertexBuffer()->deviceAddress();
-        skinning_constants.output_buffer = actor->vertexBuffer()->deviceAddress();
+        skinning_constants.input_buffer = scheduler_->use(context, input_mesh->vertexBuffer()).deviceAddress();
+        skinning_constants.output_buffer = scheduler_->use(context, actor->vertexBuffer()).deviceAddress();
         skinning_constants.bone_buffer = scheduler_->use(context, actor->transformBuffer().buffer()).deviceAddress();
 
         const auto num_dispatches = (input_mesh->num_vertices_ + kVertexBufferAlign - 1) / kVertexBufferAlign;
@@ -552,6 +561,9 @@ auto Renderer::scheduleFrameWork(const RendererScheduler::FrameContext &context)
     // upload buffer data
     frame_heap_.upload();
     vector_heap_.upload();
+
+    // it is always used in the frame
+    texture_pool_->use(context);
 
     auto &rc_geometry_target =
         scheduler_->use(context, texture_pool_->getResource(current_frame_data.geometry_target.value()));
@@ -774,8 +786,11 @@ auto Renderer::scheduleFrameWork(const RendererScheduler::FrameContext &context)
                 continue;
             }
 
-            vkCmdBindVertexBuffers(command_buffer, 0, 1, vector_mesh->vertexBuffer()->addrOf(), &vertex_offset);
-            vkCmdBindIndexBuffer(command_buffer, vector_mesh->indexBuffer()->nativeBuffer(), 0, VK_INDEX_TYPE_UINT32);
+            vkCmdBindVertexBuffers(
+                command_buffer, 0, 1, scheduler_->use(context, vector_mesh->vertexBuffer()).addrOf(), &vertex_offset);
+            vkCmdBindIndexBuffer(
+                command_buffer, scheduler_->use(context, vector_mesh->indexBuffer()).nativeBuffer(), 0,
+                VK_INDEX_TYPE_UINT32);
 
             push_constants.frame_heap = vector_buffer.deviceAddress();
             push_constants.object_id = i;

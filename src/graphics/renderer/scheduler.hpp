@@ -1,5 +1,6 @@
 #pragma once
 #include <array>
+#include <deque>
 #include <vector>
 
 #include "graphics/vulkan.hpp"
@@ -74,7 +75,7 @@ public:
         VkFence fence = VK_NULL_HANDLE;
         VkSemaphore present_semaphore = VK_NULL_HANDLE;
 
-        std::vector<RendererResource *> deletion_queue;
+        std::deque<RendererResource *> deletion_queue;
     };
 
     static auto create(Context *context) -> std::unique_ptr<RendererScheduler>;
@@ -151,7 +152,8 @@ template <typename cbBufferDataType> class MutableSharedBuffer final {
 public:
     static auto create(IResourceScheduler *scheduler) -> MutableSharedBuffer {
         const RendererBuffer::Description description = {
-            .memory = RendererBuffer::MemoryType::eDevice,
+            .usage = RendererBuffer::Usage::eBufferDeviceAddress,
+            .memory = RendererBuffer::MemoryType::eShared,
             .size = sizeof(cbBufferDataType),
         };
 
@@ -183,7 +185,7 @@ public:
     auto nativeBuffer() const -> VkBuffer { return buffer_->getCurrent()->nativeBuffer(); }
     auto deviceAddress() const -> VkDeviceAddress { return buffer_->getCurrent()->deviceAddress(); }
     auto cpuMappedAddress() const -> void * { return buffer_->getCurrent()->cpuMappedAddress(); }
-    auto upload() -> void { std::memcpy(&data_, cpuMappedAddress(), sizeof(cbBufferDataType)); }
+    auto upload() -> void { std::memcpy(cpuMappedAddress(), &data_, sizeof(cbBufferDataType)); }
 
 private:
     cbBufferDataType data_ = {};

@@ -70,7 +70,7 @@ auto ComputePipelineBuilder::build() -> util::RefCountedPtr<ComputePipeline> {
 
     VkShaderModuleCreateInfo shader_module_info = {
         .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-        .codeSize = shader_bytecode_.size(),
+        .codeSize = shader_bytecode_.size() * sizeof(uint32_t),
         .pCode = reinterpret_cast<const uint32_t *>(shader_bytecode_.data()),
     };
 
@@ -126,8 +126,8 @@ auto ComputePipelineBuilder::build() -> util::RefCountedPtr<ComputePipeline> {
     VkPipeline native_pipeline = VK_NULL_HANDLE;
     VK_CHECK_ERROR(vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &native_pipeline));
 
-    auto pipeline = util::RefCountedPtr<ComputePipeline>{
-        new ComputePipeline(scheduler_, native_shader_module, native_layout, native_pipeline)};
+    auto pipeline = util::RefCountedPtr<ComputePipeline>::create(
+        new ComputePipeline(scheduler_, native_shader_module, native_layout, native_pipeline));
     pipeline->descriptor_set_layouts_ = descriptor_set_layouts_;
 
     return pipeline;
@@ -254,6 +254,11 @@ auto RenderPipelineBuilder::withCullMode(VkCullModeFlags mode) -> RenderPipeline
     return *this;
 }
 
+auto RenderPipelineBuilder::withFrontFace(VkFrontFace face) -> RenderPipelineBuilder & {
+    rasterization_desc_.frontFace = face;
+    return *this;
+}
+
 auto RenderPipelineBuilder::withSampleCount(VkSampleCountFlagBits count) -> RenderPipelineBuilder & {
     multisample_desc_.rasterizationSamples = count;
     return *this;
@@ -264,7 +269,7 @@ auto RenderPipelineBuilder::build() -> util::RefCountedPtr<RenderPipeline> {
 
     VkShaderModuleCreateInfo shader_module_info = {
         .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-        .codeSize = shader_bytecode_.size(),
+        .codeSize = shader_bytecode_.size() * sizeof(uint32_t),
         .pCode = reinterpret_cast<const uint32_t *>(shader_bytecode_.data()),
     };
 
@@ -372,8 +377,8 @@ auto RenderPipelineBuilder::build() -> util::RefCountedPtr<RenderPipeline> {
     VkPipeline native_pipeline = VK_NULL_HANDLE;
     VK_CHECK_ERROR(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &native_pipeline));
 
-    auto pipeline = util::RefCountedPtr<RenderPipeline>{
-        new RenderPipeline(scheduler_, native_shader_module, native_layout, native_pipeline)};
+    auto pipeline = util::RefCountedPtr<RenderPipeline>::create(
+        new RenderPipeline(scheduler_, native_shader_module, native_layout, native_pipeline));
     pipeline->descriptor_set_layouts_ = descriptor_set_layouts_;
 
     return pipeline;

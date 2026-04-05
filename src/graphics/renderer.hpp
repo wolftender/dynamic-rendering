@@ -306,7 +306,7 @@ public:
 
     static auto create(const Description &description) -> std::unique_ptr<Renderer>;
 
-    ~Renderer() noexcept = default;
+    ~Renderer() noexcept;
 
     Renderer(const Renderer &) = delete;
     auto operator=(const Renderer &) = delete;

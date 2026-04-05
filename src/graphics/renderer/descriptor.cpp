@@ -163,7 +163,8 @@ auto DescriptorLayout::create(IResourceScheduler *scheduler, const Description &
     VkDescriptorSetLayout native_layout = VK_NULL_HANDLE;
     VK_CHECK_ERROR(vkCreateDescriptorSetLayout(device, &layout_desc, nullptr, &native_layout));
 
-    util::RefCountedPtr<DescriptorLayout> layout{new DescriptorLayout(scheduler, native_layout, description)};
+    auto layout = util::RefCountedPtr<DescriptorLayout>::create(
+        new (std::nothrow) DescriptorLayout(scheduler, native_layout, description));
 
     layout->num_sampler_textures_ = num_sampler_textures;
     layout->num_storage_buffers_ = num_storage_buffers;
