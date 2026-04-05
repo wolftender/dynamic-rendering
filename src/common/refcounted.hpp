@@ -26,7 +26,7 @@ public:
     }
 
     RefCountedPtr(RefCountedPtr &&other) noexcept : ptr_{nullptr} {
-        if (this != &other) {
+        if (this != reinterpret_cast<RefCountedPtr *>(&reinterpret_cast<unsigned char &>(other))) {
             swap(other);
         }
     }

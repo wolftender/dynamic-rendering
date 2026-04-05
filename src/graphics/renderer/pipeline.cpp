@@ -8,7 +8,7 @@ namespace graphics {
 ComputePipelineBuilder::ComputePipelineBuilder(IResourceScheduler *scheduler) : scheduler_{scheduler} {}
 
 auto ComputePipelineBuilder::withShaderStage(
-    std::span<const uint8_t> bytecode, std::span<const ShaderDescription> descriptions) -> ComputePipelineBuilder & {
+    std::span<const uint32_t> bytecode, std::span<const ShaderDescription> descriptions) -> ComputePipelineBuilder & {
     shader_bytecode_.assign(bytecode.begin(), bytecode.end());
     shader_descriptions_.assign(descriptions.begin(), descriptions.end());
     return *this;
@@ -100,12 +100,7 @@ auto ComputePipelineBuilder::build() -> util::RefCountedPtr<ComputePipeline> {
 }
 
 RenderPipelineBuilder::RenderPipelineBuilder(IResourceScheduler *scheduler)
-    : scheduler_{scheduler},
-      vertex_input_desc_{
-          .binding = 0,
-          .stride = 0,
-          .inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
-      },
+    : scheduler_{scheduler}, vertex_input_desc_{std::nullopt},
       input_assembly_desc_{
           .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
           .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
@@ -115,7 +110,7 @@ RenderPipelineBuilder::RenderPipelineBuilder(IResourceScheduler *scheduler)
           .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
           .depthTestEnable = VK_TRUE,
           .depthWriteEnable = VK_TRUE,
-          .depthCompareOp = VK_COMPARE_OP_LESS,
+          .depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL,
           .depthBoundsTestEnable = VK_FALSE,
           .stencilTestEnable = VK_FALSE,
       },
@@ -158,7 +153,7 @@ auto RenderPipelineBuilder::blendAttachmentAlphaBlending() -> VkPipelineColorBle
 }
 
 auto RenderPipelineBuilder::withShaderStage(
-    std::span<const uint8_t> bytecode, std::span<const ShaderDescription> descriptions) -> RenderPipelineBuilder & {
+    std::span<const uint32_t> bytecode, std::span<const ShaderDescription> descriptions) -> RenderPipelineBuilder & {
     shader_bytecode_.assign(bytecode.begin(), bytecode.end());
     shader_descriptions_.assign(descriptions.begin(), descriptions.end());
 
@@ -284,8 +279,8 @@ auto RenderPipelineBuilder::build() -> util::RefCountedPtr<RenderPipeline> {
 
     VkPipelineVertexInputStateCreateInfo vertex_input_info = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-        .vertexBindingDescriptionCount = 1,
-        .pVertexBindingDescriptions = &vertex_input_desc_,
+        .vertexBindingDescriptionCount = vertex_input_desc_.has_value() ? uint32_t{1u} : uint32_t{0u},
+        .pVertexBindingDescriptions = vertex_input_desc_.has_value() ? &vertex_input_desc_.value() : nullptr,
         .vertexAttributeDescriptionCount = static_cast<uint32_t>(vertex_input_attribs_.size()),
         .pVertexAttributeDescriptions = vertex_input_attribs_.data(),
     };

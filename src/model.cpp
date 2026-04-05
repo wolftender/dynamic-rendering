@@ -9,7 +9,7 @@ namespace graphics {
 
 template <>
 auto Model::getResource<Renderer::TextureId>(Renderer *renderer, Renderer::TextureId handle)
-    -> const Renderer::Texture * {
+    -> const RendererTexture * {
     return renderer->getTexture(handle);
 }
 
@@ -215,14 +215,15 @@ auto Model::addAnimMeshImpl(
 
 auto Model::addRgbaTextureImpl(uint32_t width, uint32_t height, std::span<const uint8_t> data)
     -> std::optional<TextureId> {
-    Renderer::Texture::Description desc = {
+    RendererTexture::RgbaDescription desc = {
         .width = width,
         .height = height,
-        .mag_filter = Renderer::Texture::MagFilter::eLinear,
-        .min_filter = Renderer::Texture::MinFilter::eLinear,
+        .min_filter = RendererTexture::MinFilter::eLinear,
+        .mag_filter = RendererTexture::MagFilter::eLinear,
+        .init_data = data,
     };
 
-    auto texture_rc = renderer_->createRgbaTexture(desc, data);
+    auto texture_rc = renderer_->createRgbaTexture(desc);
     if (!texture_rc.has_value()) {
         return std::nullopt;
     }

@@ -106,7 +106,7 @@ public:
     ComputePipelineBuilder(ComputePipelineBuilder &&) = delete;
     auto operator=(ComputePipelineBuilder &&) = delete;
 
-    auto withShaderStage(std::span<const uint8_t> bytecode, std::span<const ShaderDescription> descriptions)
+    auto withShaderStage(std::span<const uint32_t> bytecode, std::span<const ShaderDescription> descriptions)
         -> ComputePipelineBuilder &;
 
     auto withDescriptorSet(util::RefCountedPtr<DescriptorLayout> set_layout) -> ComputePipelineBuilder &;
@@ -124,7 +124,7 @@ private:
 
     std::vector<util::RefCountedPtr<DescriptorLayout>> descriptor_set_layouts_;
     std::vector<VkPushConstantRange> push_constant_ranges_;
-    std::vector<uint8_t> shader_bytecode_;
+    std::vector<uint32_t> shader_bytecode_;
     std::vector<ShaderDescription> shader_descriptions_;
 };
 
@@ -142,7 +142,7 @@ public:
     RenderPipelineBuilder(RenderPipelineBuilder &&) = delete;
     auto operator=(RenderPipelineBuilder &&) = delete;
 
-    auto withShaderStage(std::span<const uint8_t> bytecode, std::span<const ShaderDescription> descriptions)
+    auto withShaderStage(std::span<const uint32_t> bytecode, std::span<const ShaderDescription> descriptions)
         -> RenderPipelineBuilder &;
 
     auto withDescriptorSet(util::RefCountedPtr<DescriptorLayout> set_layout) -> RenderPipelineBuilder &;
@@ -159,9 +159,11 @@ public:
     auto withVertexLayout(
         std::span<const VertexLayoutElement> attributes, uint32_t binding = 0,
         VkVertexInputRate input_rate = VK_VERTEX_INPUT_RATE_VERTEX) -> RenderPipelineBuilder & {
-        vertex_input_desc_.binding = binding;
-        vertex_input_desc_.stride = sizeof(T);
-        vertex_input_desc_.inputRate = input_rate;
+        vertex_input_desc_ = VkVertexInputBindingDescription{
+            .binding = binding,
+            .stride = sizeof(T),
+            .inputRate = input_rate,
+        };
 
         vertex_input_attribs_.clear();
         for (const auto &attribute : attributes) {
@@ -206,7 +208,7 @@ private:
     std::vector<util::RefCountedPtr<DescriptorLayout>> descriptor_set_layouts_;
 
     std::vector<VkVertexInputAttributeDescription> vertex_input_attribs_;
-    std::vector<uint8_t> shader_bytecode_;
+    std::vector<uint32_t> shader_bytecode_;
     std::vector<ShaderDescription> shader_descriptions_;
 
     std::vector<Format> color_attachment_formats_;
@@ -215,7 +217,7 @@ private:
 
     std::vector<VkPushConstantRange> push_constant_ranges_;
 
-    VkVertexInputBindingDescription vertex_input_desc_ = {};
+    std::optional<VkVertexInputBindingDescription> vertex_input_desc_ = {};
     VkPipelineInputAssemblyStateCreateInfo input_assembly_desc_ = {};
     VkPipelineDepthStencilStateCreateInfo depth_stencil_desc_ = {};
     VkPipelineRasterizationStateCreateInfo rasterization_desc_ = {};

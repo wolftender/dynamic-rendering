@@ -11,6 +11,12 @@
 #include "common/fixedqueue.hpp"
 #include "common/managedpool.hpp"
 
+#include "graphics/renderer/bindless.hpp"
+#include "graphics/renderer/scheduler.hpp"
+#include "graphics/renderer/texture.hpp"
+#include "graphics/renderer/buffer.hpp"
+#include "graphics/renderer/pipeline.hpp"
+
 namespace graphics {
 
 class Renderer final {
@@ -20,56 +26,6 @@ private:
     struct AnimatedMeshTag {};
     struct ActorMeshTag {};
     struct VectorMeshTag {};
-
-    class BufferHelper {
-    public:
-        BufferHelper(Renderer *renderer, size_t size);
-        virtual ~BufferHelper() noexcept;
-
-        BufferHelper(const BufferHelper &) = delete;
-        auto operator=(const BufferHelper &) = delete;
-
-        BufferHelper(BufferHelper &&b) noexcept;
-        auto operator=(BufferHelper &&b) noexcept -> BufferHelper &;
-
-        auto size() const -> size_t { return size_; }
-        auto stagingBuffer() const -> const Buffer & { return staging_buffer_; }
-        auto deviceBuffer() const -> const Buffer & { return device_buffer_; }
-        auto deviceAddress() const -> VkDeviceAddress { return device_address_; }
-        auto cpuMappedPointer() const -> void * { return staging_buffer_.cpuMappedPointer(); }
-
-        auto upload(VkCommandBuffer command_buffer, std::span<const uint8_t> data) -> void;
-
-    private:
-        Renderer *renderer_ = nullptr;
-        Context *context_ = nullptr;
-
-        size_t size_ = 0ull;
-
-        Buffer staging_buffer_ = {};
-        Buffer device_buffer_ = {};
-        VkDeviceAddress device_address_ = {};
-    };
-
-    template <typename cbBufferDataType> class TypedBufferHelper : public BufferHelper {
-    public:
-        static constexpr auto kDataSize = sizeof(cbBufferDataType);
-        static auto create(Renderer *renderer) -> std::unique_ptr<TypedBufferHelper> {
-            return std::make_unique<TypedBufferHelper<cbBufferDataType>>(renderer);
-        }
-
-        TypedBufferHelper(Renderer *renderer) : BufferHelper{renderer, kDataSize} {}
-
-        auto storage() -> cbBufferDataType & { return data_; }
-        auto storage() const -> const cbBufferDataType & { return data_; }
-
-        auto upload(VkCommandBuffer command_buffer) -> void {
-            BufferHelper::upload(command_buffer, {reinterpret_cast<const uint8_t *>(&data_), kDataSize});
-        }
-
-    private:
-        cbBufferDataType data_ = {};
-    };
 
 public:
     static constexpr uint32_t kNumMaxPointLights = 20;
@@ -130,74 +86,97 @@ public:
         uint32_t num_vector_objects;
     };
 
-    class Mesh;
-    class Texture;
-    class ActorMesh;
+    using TextureId = BindlessTexturePool<kNumTexturePoolSize>::Id;
 
-    template <typename cbBufferDataType> class DataBuffer final {
+    class Mesh final {
     public:
-        DataBuffer(Renderer *renderer) : renderer_{renderer}, buffers_{makeBufferArray(renderer)} {}
+        struct Description {
+            std::span<const uint8_t> vertex_buffer;
+            std::span<const uint32_t> indices;
 
-        auto storage() -> cbBufferDataType & { return storage_; }
-        auto storage() const -> const cbBufferDataType & { return storage_; }
-        auto deviceAddress(uint32_t frame) -> VkDeviceAddress { return buffers_[frame].deviceAddress(); }
+            uint32_t vertex_size;
+            uint32_t num_vertices;
 
-        auto upload(VkCommandBuffer command_buffer, uint32_t frame) -> void {
-            buffers_[frame].upload(
-                command_buffer, {reinterpret_cast<const uint8_t *>(storage_), sizeof(cbBufferDataType)});
-        }
-
-    private:
-        static auto makeBufferArray(Renderer *renderer) -> std::array<BufferHelper, kNumFramesInFlight> {
-            return [&]<size_t... I>(std::index_sequence<I...>) {
-                return std::array<BufferHelper, kNumFramesInFlight>{
-                    (void(I), BufferHelper{renderer, sizeof(cbBufferDataType)})...};
-            }(std::make_index_sequence<kNumFramesInFlight>{});
-        }
-
-        Renderer *renderer_ = nullptr;
-
-        cbBufferDataType storage_;
-        std::array<BufferHelper, kNumFramesInFlight> buffers_;
-    };
-
-    template <typename cbBufferDataType> class SharedDataBuffer final {
-    public:
-        static auto create(Renderer *renderer) -> std::optional<SharedDataBuffer> {
-            SharedDataBuffer<cbBufferDataType> shared_buffer_helper;
-
-            shared_buffer_helper.renderer_ = renderer;
-            for (auto &buffer : shared_buffer_helper.buffers_) {
-                buffer.buffer = shared_buffer_helper.renderer_->context_->memory().createSharedBuffer(
-                    VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, sizeof(cbBufferDataType));
-
-                buffer.address = buffer.buffer.deviceAddress();
-            }
-
-            return shared_buffer_helper;
-        }
-
-        auto storage() -> cbBufferDataType & { return storage_; }
-        auto storage() const -> const cbBufferDataType & { return storage_; }
-        auto deviceAddress(uint32_t frame) const -> VkDeviceAddress { return buffers_[frame].address; }
-
-        auto upload(uint32_t frame) const -> void {
-            ::memcpy(buffers_[frame].buffer.cpuMappedPointer(), &storage_, sizeof(cbBufferDataType));
-        }
-
-    private:
-        struct SharedBufferWithAddress {
-            Buffer buffer;
-            VkDeviceAddress address;
+            RendererBuffer::Usage vertex_buffer_flags;
+            RendererBuffer::Usage index_buffer_flags;
         };
 
-        SharedDataBuffer() = default;
+        Mesh(const Mesh &) = delete;
+        auto operator=(const Mesh &) = delete;
+
+        Mesh(Mesh &&) noexcept;
+        auto operator=(Mesh &&) noexcept -> Mesh &;
+
+        ~Mesh() noexcept = default;
+
+        auto numVertices() const -> uint32_t { return num_vertices_; }
+        auto numIndices() const -> uint32_t { return num_indices_; }
+
+        auto vertexBuffer() -> RendererBuffer * { return vertex_buffer_; }
+        auto indexBuffer() -> RendererBuffer * { return index_bufer_; }
+
+        auto vertexBuffer() const -> const RendererBuffer * { return vertex_buffer_; }
+        auto indexBuffer() const -> const RendererBuffer * { return index_bufer_; }
+
+        auto vertexBufferSize() const -> VkDeviceSize { return vertex_buffer_->description().size; }
+        auto indexBufferSize() const -> VkDeviceSize { return index_bufer_->description().size; }
+
+    private:
+        static auto create(Renderer *renderer, const Description &desc) -> std::optional<Mesh>;
+
+        Mesh() = default;
 
         Renderer *renderer_ = nullptr;
+        uint32_t num_vertices_, num_indices_;
 
-        cbBufferDataType storage_;
-        std::array<SharedBufferWithAddress, kNumFramesInFlight> buffers_;
+        util::RefCountedPtr<RendererBuffer> vertex_buffer_;
+        util::RefCountedPtr<RendererBuffer> index_bufer_;
+
+        friend class Renderer;
     };
+
+    using MeshId = util::ManagedPool<Mesh, kNumMeshPoolSize, MeshTag>::Id;
+    using AnimatedMeshId = util::ManagedPool<Mesh, kNumAnimMeshPoolSize, AnimatedMeshTag>::Id;
+    using VectorMeshId = util::ManagedPool<Mesh, kNumMaxVectorMeshes, VectorMeshTag>::Id;
+
+    class ActorMesh final {
+    public:
+        ~ActorMesh() noexcept = default;
+
+        ActorMesh(const ActorMesh &) = delete;
+        auto operator=(const ActorMesh &) = delete;
+
+        ActorMesh(ActorMesh &&) noexcept = default;
+        auto operator=(ActorMesh &&) noexcept -> ActorMesh & = default;
+
+        auto inputMesh() const -> AnimatedMeshId { return input_mesh_; }
+        auto vertexBuffer() const -> const RendererBuffer * { return output_buffer_->getCurrent(); }
+        auto transformBuffer() -> MutableSharedBuffer<cbSkinningBuffer> & { return buffer_; }
+        auto transformBuffer() const -> const MutableSharedBuffer<cbSkinningBuffer> & { return buffer_; }
+        auto skinningBuffer() const -> const cbSkinningBuffer & { return buffer_.data(); }
+        auto skinningBuffer() -> cbSkinningBuffer & { return buffer_.data(); }
+
+    private:
+        static auto create(Renderer *renderer, AnimatedMeshId mesh) -> std::optional<ActorMesh>;
+
+        ActorMesh(
+            RendererScheduler *scheduler, AnimatedMeshId input_mesh, MutableSharedBuffer<cbSkinningBuffer> &&buffer)
+            : scheduler_{scheduler}, input_mesh_{input_mesh}, buffer_{std::move(buffer)} {};
+
+        RendererScheduler *scheduler_ = nullptr;
+
+        AnimatedMeshId input_mesh_;
+        std::unique_ptr<RendererScheduler::MutableBuffer> output_buffer_;
+
+        VkDeviceSize output_buffer_size_ = 0;
+        size_t num_vertices_ = 0;
+
+        MutableSharedBuffer<cbSkinningBuffer> buffer_;
+
+        friend class Renderer;
+    };
+
+    using ActorMeshId = util::ManagedPool<ActorMesh, kNumMaxSkinnedObjects, ActorMeshTag>::Id;
 
     class IShaderLoader {
     public:
@@ -216,26 +195,6 @@ public:
         IShaderLoader(IShaderLoader &&) noexcept = delete;
         auto operator=(IShaderLoader &&) noexcept = delete;
     };
-
-    template <typename T, typename Tag> class ResourceId final {
-    public:
-        using Resource = T;
-
-        ResourceId(uint32_t index, uint32_t generation) : index_{index}, generation_{generation} {}
-
-        auto index() const -> uint32_t { return index_; }
-        auto generation() const -> uint32_t { return generation_; }
-
-    private:
-        uint32_t index_;
-        uint32_t generation_;
-    };
-
-    using MeshId = ResourceId<Mesh, MeshTag>;
-    using TextureId = ResourceId<Texture, TextureTag>;
-    using AnimatedMeshId = ResourceId<Mesh, AnimatedMeshTag>;
-    using ActorMeshId = ResourceId<ActorMesh, ActorMeshTag>;
-    using VectorMeshId = ResourceId<Mesh, VectorMeshTag>;
 
     struct Description {
         Context *context;
@@ -346,89 +305,6 @@ public:
         PerFrameTexturePool = 0,
     };
 
-    class Mesh final {
-    public:
-        struct Description {
-            std::span<const uint8_t> vertex_buffer;
-            std::span<const uint32_t> indices;
-
-            uint32_t vertex_size;
-            uint32_t num_vertices;
-
-            VkBufferUsageFlags vertex_buffer_flags;
-            VkBufferUsageFlags index_buffer_flags;
-        };
-
-        Mesh(const Mesh &) = delete;
-        auto operator=(const Mesh &) = delete;
-
-        Mesh(Mesh &&) noexcept;
-        auto operator=(Mesh &&) noexcept -> Mesh &;
-
-        ~Mesh() noexcept = default;
-
-        auto numVertices() const -> uint32_t { return num_vertices_; }
-        auto numIndices() const -> uint32_t { return num_indices_; }
-
-        auto vertexBuffer() const -> const Buffer & { return vertex_buffer_; }
-        auto indexBuffer() const -> const Buffer & { return index_bufer_; }
-
-        auto vertexBufferSize() const -> VkDeviceSize { return vertex_buffer_size_; }
-        auto indexBufferSize() const -> VkDeviceSize { return index_buffer_size_; }
-
-    private:
-        static auto create(Renderer *renderer, const Description &desc) -> std::optional<Mesh>;
-
-        Mesh() = default;
-
-        Renderer *renderer_ = nullptr;
-        uint32_t num_vertices_, num_indices_;
-
-        Buffer vertex_buffer_;
-        Buffer index_bufer_;
-
-        VkDeviceSize vertex_buffer_size_;
-        VkDeviceSize index_buffer_size_;
-
-        friend class Renderer;
-    };
-
-    class ActorMesh final {
-    public:
-        ~ActorMesh() noexcept = default;
-
-        ActorMesh(const ActorMesh &) = delete;
-        auto operator=(const ActorMesh &) = delete;
-
-        ActorMesh(ActorMesh &&) noexcept = default;
-        auto operator=(ActorMesh &&) noexcept -> ActorMesh & = default;
-
-        auto inputMesh() const -> AnimatedMeshId { return input_mesh_; }
-        auto vertexBuffer(uint32_t current_frame) const -> const Buffer & { return output_buffer_[current_frame]; }
-        auto transformBuffer() const -> const SharedDataBuffer<cbSkinningBuffer> & { return buffer_; }
-
-        auto skinningBuffer() const -> const cbSkinningBuffer & { return buffer_.storage(); }
-        auto skinningBuffer() -> cbSkinningBuffer & { return buffer_.storage(); }
-
-    private:
-        static auto create(Renderer *renderer, AnimatedMeshId mesh) -> std::optional<ActorMesh>;
-
-        ActorMesh(Renderer *renderer, AnimatedMeshId input_mesh, SharedDataBuffer<cbSkinningBuffer> &&buffer)
-            : renderer_{renderer}, input_mesh_{input_mesh}, buffer_{std::move(buffer)} {};
-
-        Renderer *renderer_ = nullptr;
-
-        AnimatedMeshId input_mesh_;
-        std::array<Buffer, kNumFramesInFlight> output_buffer_;
-
-        VkDeviceSize output_buffer_size_ = 0;
-        size_t num_vertices_ = 0;
-
-        SharedDataBuffer<cbSkinningBuffer> buffer_;
-
-        friend class Renderer;
-    };
-
     static auto create(const Description &description) -> std::unique_ptr<Renderer>;
 
     ~Renderer() noexcept;
@@ -438,6 +314,9 @@ public:
 
     Renderer(Renderer &&) noexcept = delete;
     auto operator=(Renderer &&) noexcept = delete;
+
+    auto scheduler() -> RendererScheduler & { return *scheduler_; }
+    auto scheduler() const -> const RendererScheduler & { return *scheduler_; }
 
     auto camera() -> Camera & { return camera_; }
     auto camera() const -> const Camera & { return camera_; }
@@ -450,6 +329,8 @@ public:
 
         pending_resize_ = {surface_extent, framebuffer_extent};
     }
+
+    auto createRgbaTexture(const RendererTexture::RgbaDescription &desc) -> std::optional<TextureId>;
 
     template <util::TypedContiguousRange<StaticVertex> VR, util::TypedContiguousRange<const uint32_t> IR>
     auto createMesh(const VR &vertex_input_range, const IR &index_input_range) -> std::optional<MeshId> {
@@ -464,8 +345,8 @@ public:
             .indices = {index_buffer_ptr, index_buffer_size},
             .vertex_size = sizeof(StaticVertex),
             .num_vertices = static_cast<uint32_t>(std::ranges::size(vertex_input_range)),
-            .vertex_buffer_flags = 0,
-            .index_buffer_flags = 0,
+            .vertex_buffer_flags = RendererBuffer::Usage::eNone,
+            .index_buffer_flags = RendererBuffer::Usage::eNone,
         };
 
         auto mesh = Mesh::create(this, desc);
@@ -474,20 +355,7 @@ public:
             return std::nullopt;
         }
 
-        return addMesh(std::move(mesh.value()));
-    }
-
-    template <util::TypedContiguousRange<const uint8_t> R>
-    auto createRgbaTexture(const Texture::Description &desc, const R &rgba_data) -> std::optional<TextureId> {
-        const auto rgba_buffer_ptr = std::ranges::data(rgba_data);
-        const auto rgba_buffer_size = std::ranges::size(rgba_data);
-
-        auto texture = Texture::fromRgba(this, desc, {rgba_buffer_ptr, rgba_buffer_size});
-        if (!texture.has_value()) {
-            return std::nullopt;
-        }
-
-        return addTexture(std::move(texture.value()));
+        return mesh_pool_.store(std::move(mesh.value()));
     }
 
     template <util::TypedContiguousRange<SkinnedVertex> VR, util::TypedContiguousRange<const uint32_t> IR>
@@ -504,8 +372,8 @@ public:
             .indices = {index_buffer_ptr, index_buffer_size},
             .vertex_size = sizeof(SkinnedVertex),
             .num_vertices = static_cast<uint32_t>(std::ranges::size(vertex_input_range)),
-            .vertex_buffer_flags = VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-            .index_buffer_flags = 0,
+            .vertex_buffer_flags = RendererBuffer::Usage::eBufferDeviceAddress,
+            .index_buffer_flags = RendererBuffer::Usage::eNone,
         };
 
         auto mesh = Mesh::create(this, desc);
@@ -514,7 +382,7 @@ public:
             return std::nullopt;
         }
 
-        return addAnimMesh(std::move(mesh.value()));
+        return anim_mesh_pool_.store(std::move(mesh.value()));
     }
 
     auto createActorMesh(AnimatedMeshId mesh) -> std::optional<ActorMeshId> {
@@ -524,7 +392,7 @@ public:
             return std::nullopt;
         }
 
-        return addActorMesh(std::move(actor_mesh.value()));
+        return actor_mesh_pool_.store(std::move(actor_mesh.value()));
     }
 
     template <util::TypedContiguousRange<VectorVertex> VR, util::TypedContiguousRange<const uint32_t> IR>
@@ -540,8 +408,8 @@ public:
             .indices = {index_buffer_ptr, index_buffer_size},
             .vertex_size = sizeof(VectorVertex),
             .num_vertices = static_cast<uint32_t>(std::ranges::size(vertex_input_range)),
-            .vertex_buffer_flags = 0,
-            .index_buffer_flags = 0,
+            .vertex_buffer_flags = RendererBuffer::Usage::eNone,
+            .index_buffer_flags = RendererBuffer::Usage::eNone,
         };
 
         auto mesh = Mesh::create(this, desc);
@@ -550,10 +418,10 @@ public:
             return std::nullopt;
         }
 
-        return addVectorMesh(std::move(mesh.value()));
+        return vector_mesh_pool_.store(std::move(mesh.value()));
     }
 
-    template <std::invocable<const Texture &> F> auto withTexture(TextureId handle, F consumer) const {
+    template <std::invocable<const RendererTexture *> F> auto withTexture(TextureId handle, F consumer) const {
         auto texture = getTexture(handle);
         if (!texture) {
             return;
@@ -607,18 +475,18 @@ public:
         consumer(*vector_mesh);
     }
 
-    auto deleteMesh(MeshId handle) { unrefMesh(handle); }
-    auto deleteTexture(TextureId handle) { unrefTexture(handle); }
-    auto deleteAnimMesh(AnimatedMeshId handle) { unrefAnimMesh(handle); }
-    auto deleteActorMesh(ActorMeshId handle) { unrefActorMesh(handle); }
-    auto deleteVectorMesh(VectorMeshId handle) { unrefVectorMesh(handle); }
+    auto deleteMesh(MeshId handle) { mesh_pool_.destroy(handle); }
+    auto deleteTexture(TextureId handle) { texture_pool_->destroyResource(handle); }
+    auto deleteAnimMesh(AnimatedMeshId handle) { anim_mesh_pool_.destroy(handle); }
+    auto deleteActorMesh(ActorMeshId handle) { actor_mesh_pool_.destroy(handle); }
+    auto deleteVectorMesh(VectorMeshId handle) { vector_mesh_pool_.destroy(handle); }
 
-    auto getMesh(const MeshId &id) const -> const Mesh *;
-    auto getTexture(const TextureId &id) const -> const Texture *;
-    auto getAnimMesh(const AnimatedMeshId &id) const -> const Mesh *;
-    auto getActorMesh(const ActorMeshId &id) const -> const ActorMesh *;
-    auto getActorMesh(const ActorMeshId &id) -> ActorMesh *;
-    auto getVectorMesh(const VectorMeshId &id) const -> const Mesh *;
+    auto getMesh(const MeshId &id) const -> const Mesh * { return mesh_pool_.get(id); }
+    auto getTexture(const TextureId &id) const -> const RendererTexture * { return texture_pool_->getResource(id); }
+    auto getAnimMesh(const AnimatedMeshId &id) const -> const Mesh * { return anim_mesh_pool_.get(id); }
+    auto getActorMesh(const ActorMeshId &id) const -> const ActorMesh * { return actor_mesh_pool_.get(id); }
+    auto getActorMesh(const ActorMeshId &id) -> ActorMesh * { return actor_mesh_pool_.get(id); }
+    auto getVectorMesh(const VectorMeshId &id) const -> const Mesh * { return vector_mesh_pool_.get(id); }
 
     auto frame() -> util::Result;
 
@@ -631,128 +499,20 @@ public:
     auto drawVectorMesh(VectorDrawDescription &&desc) -> util::Result { return vector_queue_.push(std::move(desc)); }
 
 private:
-    class ComputeSkinningPass final {
-    public:
-        struct cbPushConstantBuffer {
-            VkDeviceAddress bone_buffer;
-            VkDeviceAddress input_buffer;
-            VkDeviceAddress output_buffer;
-        };
-
-        static auto create(Renderer *renderer, const IShaderLoader *shader_loader)
-            -> std::unique_ptr<ComputeSkinningPass>;
-
-        ~ComputeSkinningPass() noexcept;
-
-        ComputeSkinningPass(const ComputeSkinningPass &) = delete;
-        auto operator=(const ComputeSkinningPass &) = delete;
-
-        ComputeSkinningPass(ComputeSkinningPass &&) noexcept = delete;
-        auto operator=(ComputeSkinningPass &&) noexcept = delete;
-
-        auto shaderModule() const -> VkShaderModule { return shader_module_; }
-        auto pipelineLayout() const -> VkPipelineLayout { return pipeline_layout_; }
-        auto pipeline() const -> VkPipeline { return pipeline_; }
-
-    private:
-        ComputeSkinningPass() = default;
-
-        Renderer *renderer_ = nullptr;
-
-        VkShaderModule shader_module_ = VK_NULL_HANDLE;
-        VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
-        VkPipeline pipeline_ = VK_NULL_HANDLE;
+    struct cbSkinningPushConstants {
+        VkDeviceAddress bone_buffer;
+        VkDeviceAddress input_buffer;
+        VkDeviceAddress output_buffer;
     };
 
-    class OpaqueGeometryPass final {
-    public:
-        struct cbPushConstantBuffer {
-            VkDeviceAddress frame_heap;
-            uint32_t object_id;
-        };
-
-        static auto create(Renderer *renderer, const IShaderLoader *shader_loader)
-            -> std::unique_ptr<OpaqueGeometryPass>;
-
-        ~OpaqueGeometryPass() noexcept;
-
-        OpaqueGeometryPass(const OpaqueGeometryPass &) = delete;
-        auto operator=(const OpaqueGeometryPass &) = delete;
-
-        OpaqueGeometryPass(OpaqueGeometryPass &&) noexcept = delete;
-        auto operator=(OpaqueGeometryPass &&) noexcept = delete;
-
-        auto shaderModule() const -> VkShaderModule { return shader_module_; }
-        auto pipelineLayout() const -> VkPipelineLayout { return pipeline_layout_; }
-        auto pipeline() const -> VkPipeline { return pipeline_; }
-
-    private:
-        OpaqueGeometryPass() = default;
-
-        Renderer *renderer_ = nullptr;
-
-        VkShaderModule shader_module_ = VK_NULL_HANDLE;
-        VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
-        VkPipeline pipeline_ = VK_NULL_HANDLE;
+    struct cbOpaquePassPushConstants {
+        VkDeviceAddress frame_heap;
+        uint32_t object_id;
     };
 
-    class VectorGraphicsPass final {
-    public:
-        struct cbPushConstantBuffer {
-            VkDeviceAddress frame_heap;
-            uint32_t object_id;
-        };
-
-        static auto create(Renderer *renderer, const IShaderLoader *shader_loader)
-            -> std::unique_ptr<VectorGraphicsPass>;
-
-        ~VectorGraphicsPass() noexcept;
-
-        VectorGraphicsPass(const VectorGraphicsPass &) = delete;
-        auto operator=(const VectorGraphicsPass &) = delete;
-
-        VectorGraphicsPass(VectorGraphicsPass &&) noexcept = delete;
-        auto operator=(VectorGraphicsPass &&) noexcept = delete;
-
-        auto shaderModule() const -> VkShaderModule { return shader_module_; }
-        auto pipelineLayout() const -> VkPipelineLayout { return pipeline_layout_; }
-        auto pipeline() const -> VkPipeline { return pipeline_; }
-
-    private:
-        VectorGraphicsPass() = default;
-
-        Renderer *renderer_ = nullptr;
-
-        VkShaderModule shader_module_ = VK_NULL_HANDLE;
-        VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
-        VkPipeline pipeline_ = VK_NULL_HANDLE;
-    };
-
-    class FullscreenPass final {
-    public:
-        static auto create(Renderer *renderer, uint32_t push_constant_size, std::span<const uint32_t> shader_bytecode)
-            -> std::unique_ptr<FullscreenPass>;
-
-        ~FullscreenPass() noexcept;
-
-        FullscreenPass(const FullscreenPass &) = delete;
-        auto operator=(const FullscreenPass &) = delete;
-
-        FullscreenPass(FullscreenPass &&) noexcept = delete;
-        auto operator=(FullscreenPass &&) noexcept = delete;
-
-        auto shaderModule() const -> VkShaderModule { return shader_module_; }
-        auto pipelineLayout() const -> VkPipelineLayout { return pipeline_layout_; }
-        auto pipeline() const -> VkPipeline { return pipeline_; }
-
-    private:
-        FullscreenPass() = default;
-
-        Renderer *renderer_ = nullptr;
-
-        VkShaderModule shader_module_ = VK_NULL_HANDLE;
-        VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
-        VkPipeline pipeline_ = VK_NULL_HANDLE;
+    struct cbVectorPassPushConstants {
+        VkDeviceAddress frame_heap;
+        uint32_t object_id;
     };
 
     struct cbUserInterfacePassConstants {
@@ -769,55 +529,62 @@ private:
         uint32_t reserved2;
     };
 
-    struct FrameData {
-        std::unique_ptr<TypedBufferHelper<cbFrameHeapBuffer>> scene_buffer;
-        std::unique_ptr<TypedBufferHelper<cbVectorHeapBuffer>> vector_buffer;
+    struct PendingResize {
+        VkExtent2D surface_extent, framebuffer_extent;
+    };
 
+    struct PerFrameData {
         std::optional<TextureId> geometry_target;
         std::optional<TextureId> vector_target_msaa;
         std::optional<TextureId> vector_target;
     };
 
-    auto addMesh(Mesh &&mesh) -> std::optional<MeshId>;
-    auto addTexture(Texture &&texture) -> std::optional<TextureId>;
-    auto addAnimMesh(Mesh &&mesh) -> std::optional<AnimatedMeshId>;
-    auto addActorMesh(ActorMesh &&mesh) -> std::optional<ActorMeshId>;
-    auto addVectorMesh(Mesh &&mesh) -> std::optional<VectorMeshId>;
+    auto createSkinningPipeline(IShaderLoader &shader_loader) -> util::Result;
+    auto createGeometryPipeline(IShaderLoader &shader_loader) -> util::Result;
+    auto createVectorPipeline(IShaderLoader &shader_loader) -> util::Result;
+    auto createLightingPipeline(IShaderLoader &shader_loader) -> util::Result;
+    auto createInterfacePipeline(IShaderLoader &shader_loader) -> util::Result;
 
-    auto unrefMesh(const MeshId &id) -> void;
-    auto unrefTexture(const TextureId &id) -> void;
-    auto unrefAnimMesh(const AnimatedMeshId &id) -> void;
-    auto unrefActorMesh(const ActorMeshId &id) -> void;
-    auto unrefVectorMesh(const VectorMeshId &id) -> void;
-
-    auto createSwapchainData() -> void;
     auto createRenderTargets() -> void;
-    auto getCurrentFrame() -> FrameData & { return frames_[current_frame_]; }
+
+    struct IndexedDrawCall {
+        VkBuffer vertex_buffer = VK_NULL_HANDLE;
+        VkBuffer index_buffer = VK_NULL_HANDLE;
+        uint32_t num_indices = 0;
+    };
+
+    using OpaqueIndexedDrawList = util::FixedSizeQueue<IndexedDrawCall, kNumMaxStaticObjects>;
+
+    auto useTextureHandle(const RendererScheduler::FrameContext &context, std::optional<TextureId> handle) -> int32_t;
+
+    auto prepareIndexedDraws(const RendererScheduler::FrameContext &context, OpaqueIndexedDrawList &draw_list) -> void;
+    auto scheduleFrameWork(const RendererScheduler::FrameContext &context) -> void;
 
     Renderer() = default;
 
     Context *context_ = nullptr;
     Camera camera_;
 
-    struct PendingResize {
-        VkExtent2D surface_extent, framebuffer_extent;
-    };
-
     std::optional<PendingResize> pending_resize_;
+    std::unique_ptr<RendererScheduler> scheduler_;
+    std::array<PerFrameData, RendererScheduler::kNumFramesInFlight> per_frame_data_;
+    MutableSharedBuffer<cbFrameHeapBuffer> frame_heap_;
+    MutableSharedBuffer<cbVectorHeapBuffer> vector_heap_;
+    std::optional<TextureId> depth_buffer_;
 
     // resource pools
-    std::unique_ptr<BindlessTexturePool> texture_pool_;
+    std::unique_ptr<BindlessTexturePool<kNumTexturePoolSize>> texture_pool_;
     util::ManagedPool<Mesh, kNumMeshPoolSize, MeshTag> mesh_pool_;
     util::ManagedPool<Mesh, kNumAnimMeshPoolSize, AnimatedMeshTag> anim_mesh_pool_;
     util::ManagedPool<ActorMesh, kNumMaxSkinnedObjects, ActorMeshTag> actor_mesh_pool_;
     util::ManagedPool<Mesh, kNumMaxVectorMeshes, VectorMeshTag> vector_mesh_pool_;
 
     // render passes
-    std::unique_ptr<ComputeSkinningPass> skinning_pass_ = nullptr;
-    std::unique_ptr<OpaqueGeometryPass> geometry_pass_ = nullptr;
-    std::unique_ptr<VectorGraphicsPass> vector_pass_ = nullptr;
-    std::unique_ptr<FullscreenPass> lighting_pass_ = nullptr;
-    std::unique_ptr<FullscreenPass> interface_pass_ = nullptr;
+    util::RefCountedPtr<ComputePipeline> skinning_pipeline_;
+    util::RefCountedPtr<RenderPipeline> geometry_pipeline_;
+    util::RefCountedPtr<RenderPipeline> vector_pipeline_;
+    util::RefCountedPtr<RenderPipeline> lighting_pipeline_;
+    util::RefCountedPtr<RenderPipeline> interface_pipeline_;
 
     // draw queue
     util::FixedSizeQueue<SkinnedDrawDescription, kNumMaxSkinnedObjects> skinning_queue_;

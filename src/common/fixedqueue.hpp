@@ -13,6 +13,7 @@ public:
     auto getSize() const -> uint32_t { return kNumElements; }
     auto getFill() const -> uint32_t { return fill_; }
     auto empty() const -> bool { return fill_ == 0; }
+    auto full() const -> bool { return fill_ >= kNumElements; }
 
     auto peek() -> const T * {
         if (0 == fill_) {

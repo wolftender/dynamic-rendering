@@ -72,7 +72,7 @@ public:
         MagFilter mag_filter = MagFilter::eNearest;
 
         Usage usage = Usage::eUsageNone;
-        std::span<uint8_t> init_data;
+        std::span<const uint8_t> init_data;
     };
 
     static auto create(IResourceScheduler *scheduler, const Description &desc) -> util::RefCountedPtr<RendererTexture>;

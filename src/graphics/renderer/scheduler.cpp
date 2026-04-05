@@ -59,6 +59,7 @@ auto RendererScheduler::create(Context *context) -> std::unique_ptr<RendererSche
             vkCreateSemaphore(scheduler->context_->device(), &semaphore_desc, nullptr, &frame.present_semaphore));
     }
 
+    scheduler->createSwapchainData();
     return scheduler;
 }
 
@@ -91,6 +92,138 @@ RendererScheduler::~RendererScheduler() noexcept {
             image_data.render_semaphore = VK_NULL_HANDLE;
         }
     }
+}
+
+auto RendererScheduler::resizeSwapchain(const VkExtent2D &surface_extent, const VkExtent2D &framebuffer_extent)
+    -> void {
+    context_->resize(surface_extent, framebuffer_extent);
+    createSwapchainData();
+    swapchain_needs_update_ = false;
+}
+
+auto RendererScheduler::createSwapchainData() -> void {
+    VkSemaphoreCreateInfo semaphore_desc = {
+        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+    };
+
+    const auto num_swapchain_images = context_->swapchainImages().size();
+
+    for (auto &image_data : per_image_data_) {
+        if (VK_NULL_HANDLE != image_data.render_semaphore) {
+            vkDestroySemaphore(context_->device(), image_data.render_semaphore, nullptr);
+            image_data.render_semaphore = VK_NULL_HANDLE;
+        }
+    }
+
+    per_image_data_.clear();
+    per_image_data_.resize(num_swapchain_images);
+
+    for (size_t i = 0; i < num_swapchain_images; ++i) {
+        VK_CHECK_ERROR(
+            vkCreateSemaphore(context_->device(), &semaphore_desc, nullptr, &per_image_data_[i].render_semaphore));
+    }
+}
+
+auto RendererScheduler::beginFrame() -> std::optional<FrameContext> {
+    auto &current_frame_data = per_frame_data_[current_frame_index_];
+
+    // wait for fence
+    VK_CHECK_ERROR(vkWaitForFences(context_->device(), 1, &current_frame_data.fence, VK_TRUE, UINT64_MAX));
+    VK_CHECK_ERROR(vkResetFences(context_->device(), 1, &current_frame_data.fence));
+
+    // garbage collect data referenced by the finished frame
+    for (auto *resource : current_frame_data.deletion_queue) {
+        delete resource;
+    }
+
+    current_frame_data.deletion_queue.clear();
+
+    // acquire swapchain image
+    uint32_t image_index = 0;
+    {
+        VkResult res = vkAcquireNextImageKHR(
+            context_->device(), context_->swapchain(), UINT64_MAX, current_frame_data.present_semaphore, VK_NULL_HANDLE,
+            &image_index);
+
+        switch (res) {
+        case VK_SUCCESS:
+        case VK_SUBOPTIMAL_KHR:
+            break;
+        case VK_ERROR_OUT_OF_DATE_KHR:
+            LogInfo("vulkan: renderer awaiting resize event");
+            swapchain_needs_update_ = true;
+            break;
+        default:
+            LogError("cannot acquire next swapchain image: {}", string_VkResult(res));
+            return std::nullopt;
+        }
+    }
+
+    // begin recording command buffer
+    const auto command_buffer = per_frame_data_[current_frame_index_].command_buffer;
+    VK_CHECK_ERROR(vkResetCommandBuffer(command_buffer, 0));
+
+    VkCommandBufferBeginInfo command_buffer_begin_desc = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+    };
+
+    VK_CHECK_ERROR(vkBeginCommandBuffer(command_buffer, &command_buffer_begin_desc));
+
+    return createFrameContext(current_frame_index_, image_index);
+}
+
+auto RendererScheduler::endFrame(const FrameContext &context) -> util::Result {
+    const auto command_buffer = per_frame_data_[context.getCurrentFrameIndex()].command_buffer;
+    auto &current_frame_data = per_frame_data_[context.getCurrentFrameIndex()];
+    auto &current_image_data = per_image_data_[context.getCurrentImageIndex()];
+
+    vkEndCommandBuffer(command_buffer);
+
+    VkPipelineStageFlags wait_stages = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    VkSubmitInfo submit_info = {
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .waitSemaphoreCount = 1,
+        .pWaitSemaphores = &current_frame_data.present_semaphore,
+        .pWaitDstStageMask = &wait_stages,
+        .commandBufferCount = 1,
+        .pCommandBuffers = &command_buffer,
+        .signalSemaphoreCount = 1,
+        .pSignalSemaphores = &current_image_data.render_semaphore,
+    };
+
+    VK_CHECK_ERROR(vkQueueSubmit(context_->graphicsQueue(), 1, &submit_info, current_frame_data.fence));
+    current_frame_index_ = (current_frame_index_ + 1) % kNumFramesInFlight;
+
+    const auto image_index = context.getCurrentImageIndex();
+    VkSwapchainKHR swapchain = context_->swapchain();
+    VkPresentInfoKHR present_info = {
+        .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .waitSemaphoreCount = 1,
+        .pWaitSemaphores = &current_image_data.render_semaphore,
+        .swapchainCount = 1,
+        .pSwapchains = &swapchain,
+        .pImageIndices = &image_index,
+    };
+
+    {
+        VkResult res = vkQueuePresentKHR(context_->presentQueue(), &present_info);
+
+        switch (res) {
+        case VK_SUCCESS:
+        case VK_SUBOPTIMAL_KHR:
+            break;
+        case VK_ERROR_OUT_OF_DATE_KHR:
+            LogInfo("vulkan: renderer awaiting resize event");
+            swapchain_needs_update_ = true;
+            break;
+        default:
+            LogError("cannot present swapchain image: {}", string_VkResult(res));
+            return util::Result::eFailure;
+        }
+    }
+
+    return util::Result::eSuccess;
 }
 
 } // namespace graphics
